@@ -57,15 +57,14 @@ def manual_pass(path: Path):
     for wav in path.glob("*.wav"):
         utils.ensure_row(wav.name)
     
-    # find all unanalyzed files registered in the DB
+    # find all unuploaded files registered in the DB
     for filename in utils.get_unuploaded():
         recording_path = config.UPLOADS_DIR / filename
 
         # make sure the file actually exists
         if(recording_path.exists()):
             # enqeue only if not already queued
-            if path not in list(upload_queue.queue):
-                upload_queue.put(path)
+            if recording_path not in list(upload_queue.queue):
                 print(f"[uploader] unuploaded file found: {recording_path}. Adding it to the queue.")
                 upload_queue.put(recording_path)
         else:

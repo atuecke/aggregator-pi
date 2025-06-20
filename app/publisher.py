@@ -100,16 +100,39 @@ def consume_uploads():
             uploads_publish_queue.task_done()
 
 
+
 def analysis_manual_pass(path: Path):
     print("[publisher] running analysis initial pass...")
-    for wav in path.glob("*.json"):
-        analysis_publish_queue.put(wav)
+    
+    # find all unpublished analysis results registered in the DB
+    for analysis_path in utils.get_unpublished_analysis():
+        # make sure the file actually exists
+        if(analysis_path.exists()):
+            # enqeue only if not already queued
+            if analysis_path not in list(analysis_publish_queue.queue):
+                print(f"[publisher] Unpublished analysis file found: {analysis_path}. Adding it to the queue.")
+                analysis_publish_queue.put(analysis_path)
+        else:
+            print(f"[publisher] A deleted unpublished analysis file was found: {analysis_path}")
+
     print("[publisher] analysis initial pass done!")
+
+
 
 def upload_manual_pass(path: Path):
     print("[publisher] upload running initial pass...")
-    for wav in path.glob("*.json"):
-        uploads_publish_queue.put(wav)
+
+    # find all unpublished analysis results registered in the DB
+    for upload_path in utils.get_unpublished_upload():
+        # make sure the file actually exists
+        if(upload_path.exists()):
+            # enqeue only if not already queued
+            if upload_path not in list(uploads_publish_queue.queue):
+                print(f"[publisher] Unpublished upload file found: {upload_path}. Adding it to the queue.")
+                uploads_publish_queue.put(upload_path)
+        else:
+            print(f"[publisher] A deleted unpublished upload file was found: {upload_path}")
+
     print("[publisher] upload initial pass done!")
 
 
@@ -118,14 +141,15 @@ def main():
     Thread(target=consume_analysis, daemon=True).start()
     Thread(target=consume_uploads, daemon=True).start()
 
+    analysis_manual_pass(Path(str(config.ANALYSIS_DIR)))
+    upload_manual_pass(Path(str(config.UPLOADS_DIR)))
+
     observer = Observer()
     observer.schedule(AnalysisHandler(), str(config.ANALYSIS_DIR), recursive=False)
     observer.schedule(UploadHandler(), str(config.UPLOADS_DIR), recursive=False)
     observer.start()
     print("[publisher] watching analysis & uploads dirs…")
 
-    analysis_manual_pass(Path(str(config.ANALYSIS_DIR)))
-    upload_manual_pass(Path(str(config.UPLOADS_DIR)))
     try:
         while True:
             time.sleep(1)

@@ -82,18 +82,41 @@ def row(filename: str) -> Dict[str, Any]:
     return dict(result) if result else {}
 
 def get_unanalyzed() -> list[str]:
-    """Return list[filename] that haven't been analyzed yet"""
+    """Return list[filename] that haven't been marked as analyzed in the DB"""
     
     with get_conn() as conn:
         cur = conn.execute("SELECT filename FROM recordings WHERE analyzed IS NULL")
         return [row[0] for row in cur.fetchall()]
     
 def get_unuploaded() -> list[str]:
-    """Return list[filename] that haven't been uploaded yet"""
+    """Return list[filename] that haven't been marked as uploaded in the DB"""
     
     with get_conn() as conn:
         cur = conn.execute("SELECT filename FROM recordings WHERE uploaded IS NULL")
         return [row[0] for row in cur.fetchall()]
+
+def get_unpublished_analysis() -> List[Path]:
+    """
+    Return a list of result JSON Paths in RESULTS_DIR that haven't been published to InfluxDB yet.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT analyzed FROM recordings "
+            "WHERE analyzed IS NOT NULL AND published_analysis IS NULL"
+        )
+        return [Path(row[0]) for row in cur.fetchall()]
+    
+def get_unpublished_upload() -> List[Path]:
+    """
+    Return a list of result JSON Paths in UPLOAD_DIR that haven't been published to InfluxDB yet.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT uploaded FROM recordings "
+            "WHERE uploaded IS NOT NULL AND published_upload IS NULL"
+        )
+        return [Path(row[0]) for row in cur.fetchall()]
+
 
 def get_listener_id_from_name(name: str):
     return name.split('_', 1)[0]

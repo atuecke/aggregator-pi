@@ -71,8 +71,7 @@ def manual_pass(path: Path):
         # make sure the file actually exists
         if(recording_path.exists()):
             # enqeue only if not already queued
-            if path not in list(analyze_queue.queue):
-                analyze_queue.put(path)
+            if recording_path not in list(analyze_queue.queue):
                 print(f"[analyzer] unanalyzed file found: {recording_path}. Adding it to the queue.")
                 analyze_queue.put(recording_path)
         else:
