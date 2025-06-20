@@ -21,7 +21,7 @@ def push_metrics():
         mem  = psutil.virtual_memory().percent
         disk = psutil.disk_usage(str(config.BASE_DIR)).percent
         net  = psutil.net_io_counters()
-# also put the state f all of the scripts
+# also put the state of all of the scripts
         point = (
             Point("pi_metrics")
             .field("cpu", cpu)

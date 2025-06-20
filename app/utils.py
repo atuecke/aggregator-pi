@@ -5,9 +5,17 @@ import json
 import sqlite3
 import contextlib
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
+import time, logging
 
 from . import config
+
+logging.basicConfig(
+    level=logging.INFO,
+    filename="/data/sqlite_timings.log",
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 # --- SQLite schema for recordings lifecycle tracking -----------------------
 SCHEMA = """
@@ -39,22 +47,28 @@ with get_conn() as conn:
 
 def ensure_row(filename: str) -> None:
     """Insert a new row if it doesn't exist."""
+    start = time.perf_counter()
     with get_conn() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO recordings(filename) VALUES(?)",
             (filename,)
         )
         conn.commit()
+    duration = (time.perf_counter() - start) * 1000
+    logging.info(f"SQLite ensure row for '{filename}' took {duration:.2f} ms")
 
 
 def set_field(filename: str, field: str, value: Any) -> None:
     """Update a single column for a given filename."""
+    start = time.perf_counter()
     with get_conn() as conn:
         conn.execute(
             f"UPDATE recordings SET {field} = ? WHERE filename = ?",
             (value, filename)
         )
         conn.commit()
+    duration = (time.perf_counter() - start) * 1000
+    logging.info(f"SQLite update '{field}' for '{filename}' took {duration:.2f} ms")
 
 
 def row(filename: str) -> Dict[str, Any]:
@@ -66,6 +80,20 @@ def row(filename: str) -> Dict[str, Any]:
         )
         result = cur.fetchone()
     return dict(result) if result else {}
+
+def get_unanalyzed() -> list[str]:
+    """Return list[filename] that haven't been analyzed yet"""
+    
+    with get_conn() as conn:
+        cur = conn.execute("SELECT filename FROM recordings WHERE analyzed IS NULL")
+        return [row[0] for row in cur.fetchall()]
+    
+def get_unuploaded() -> list[str]:
+    """Return list[filename] that haven't been uploaded yet"""
+    
+    with get_conn() as conn:
+        cur = conn.execute("SELECT filename FROM recordings WHERE uploaded IS NULL")
+        return [row[0] for row in cur.fetchall()]
 
 def get_listener_id_from_name(name: str):
     return name.split('_', 1)[0]
