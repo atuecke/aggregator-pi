@@ -3,7 +3,16 @@
 import time, datetime as dt, psutil, json
 from pathlib import Path
 from influxdb_client_3 import InfluxDBClient3, Point
-from . import config
+from . import config, utils
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+utils.setup_logging()  # Initialise global logging once per process
+import logging
+log = logging.getLogger("METRICS_PUBLISHER")
+# ---------------------------------------------------------------------------
+
 
 client = InfluxDBClient3(
     host=config.INFLUX_URL,
@@ -33,7 +42,7 @@ def push_metrics():
         )
         client.write(point)
         LOG_PATH.write_text(json.dumps(point.to_line_protocol()))
-        print("[metrics]", ts.isoformat())
+        log.info("Metrics pushed at %s", ts.isoformat())
         time.sleep(int(config.METRICS_INTERVAL_SEC))
 
 if __name__ == "__main__":

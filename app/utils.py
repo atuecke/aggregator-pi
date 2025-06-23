@@ -2,22 +2,48 @@
 Each row tracks the lifecycle of a single recording - from on-disk file ➜ analyzed ➜ uploaded ➜ published ➜ deleted."""
 from __future__ import annotations
 import json
+import logging
+import logging.config
+import os
+import yaml
 import sqlite3
 import contextlib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-import time, logging
+import time
 
 from . import config
 
-logging.basicConfig(
-    level=logging.INFO,
-    filename="/data/sqlite_timings.log",
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
-# --- SQLite schema for recordings lifecycle tracking -----------------------
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def setup_logging(
+    default_path: str = "/etc/iot/logging.yaml",
+    env_key: str = "LOG_CFG",
+    default_level: int = logging.INFO,
+) -> None:
+    """Initialise application-wide logging.
+
+    Order of precedence::
+        1. Path in $LOG_CFG env-var (set at runtime).
+        2. *default_path* baked into the Docker image.
+        3. Fallback to :pyfunc:`logging.basicConfig` with *default_level*.
+    """
+    cfg_path = Path(os.getenv(env_key, default_path))
+    if cfg_path.exists():
+        with cfg_path.open("rt") as fh:
+            cfg_dict = yaml.safe_load(fh.read())
+        logging.config.dictConfig(cfg_dict)
+    else:
+        logging.basicConfig(level=default_level)
+
+
+# ---------------------------------------------------------------------------
+# SQLite schema for recordings lifecycle tracking
+# ---------------------------------------------------------------------------
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
     filename TEXT PRIMARY KEY,
@@ -32,8 +58,9 @@ CREATE TABLE IF NOT EXISTS recordings (
 @contextlib.contextmanager
 def get_conn():
     """Context manager for SQLite connection using WAL journaling."""
-    conn = sqlite3.connect(config.DB_PATH, timeout=10)
+    conn = sqlite3.connect(config.DB_PATH, timeout=12)
     conn.execute("PRAGMA journal_mode=WAL;")
+    # conn.execute("PRAGMA synchronous=NORMAL;") # first couple inserts/queries take a very long time and this reduces it, but tiny risk on power-loss
     try:
         yield conn
     finally:
@@ -43,7 +70,10 @@ def get_conn():
 with get_conn() as conn:
     conn.executescript(SCHEMA)
 
-# --- high-level helpers ----------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# High‑level helpers
+# ---------------------------------------------------------------------------
 
 def ensure_row(filename: str) -> None:
     """Insert a new row if it doesn't exist."""
@@ -54,9 +84,9 @@ def ensure_row(filename: str) -> None:
             (filename,)
         )
         conn.commit()
-    duration = (time.perf_counter() - start) * 1000
-    logging.info(f"SQLite ensure row for '{filename}' took {duration:.2f} ms")
-
+    logging.getLogger(__name__).debug(
+        "SQLite ensure_row for '%s' took %.2f ms", filename, (time.perf_counter() - start) * 1000
+    )
 
 def set_field(filename: str, field: str, value: Any) -> None:
     """Update a single column for a given filename."""
@@ -67,8 +97,9 @@ def set_field(filename: str, field: str, value: Any) -> None:
             (value, filename)
         )
         conn.commit()
-    duration = (time.perf_counter() - start) * 1000
-    logging.info(f"SQLite update '{field}' for '{filename}' took {duration:.2f} ms")
+    logging.getLogger(__name__).debug(
+        "SQLite update '%s' for '%s' took %.2f ms", field, filename, (time.perf_counter() - start) * 1000
+    )
 
 
 def row(filename: str) -> Dict[str, Any]:

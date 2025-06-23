@@ -11,6 +11,7 @@ RECORDINGS_DIR      = BASE_DIR / "recordings"
 RECORDINGS_TMP_DIR  = BASE_DIR / "recordings_tmp"  # receiver writes here first
 ANALYSIS_DIR        = BASE_DIR / "analysis"   # analyzer output
 UPLOADS_DIR         = BASE_DIR / "uploads"   # uploader output
+LOGS_DIR            = BASE_DIR / "logs"
 LOG_PATH            = BASE_DIR / "metrics.log"
 DB_PATH             = BASE_DIR / "recordings.sqlite3"
 
@@ -27,5 +28,5 @@ INFLUX_UPLOADS_TABLE = os.getenv("INFLUX_UPLOADS_TABLE", "uploads")
 # --- Object store -----------------------------------------------------------
 RCLONE_REMOTE_BUCKET = os.getenv("RCLONE_REMOTE_BUCKET", "s3:my-bucket/data")
 
-for p in (RECORDINGS_DIR, RECORDINGS_TMP_DIR, ANALYSIS_DIR, UPLOADS_DIR):
+for p in (RECORDINGS_DIR, RECORDINGS_TMP_DIR, ANALYSIS_DIR, UPLOADS_DIR, LOGS_DIR):
     p.mkdir(parents=True, exist_ok=True)

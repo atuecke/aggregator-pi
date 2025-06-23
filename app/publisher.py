@@ -4,13 +4,22 @@ Handler runs uploads/publish sequentially; blocking inside `on_created`."""
 import json
 import time
 import queue
-from threading import Thread
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from influxdb_client_3 import InfluxDBClient3, Point
 from . import config, utils
 import datetime as dt
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+utils.setup_logging()  # Initialise global logging once per process
+import logging
+log = logging.getLogger("PUBLISHER")
+# ---------------------------------------------------------------------------
+
 
 # connect to InfluxDB3
 client = InfluxDBClient3(
@@ -61,7 +70,7 @@ def publish_analysis(path: Path):
     )
     client.write(point)
     utils.set_field(data.get("filename"), "published_analysis", 1)
-    print(f"[publisher] published analysis: {config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_ANALYSIS_TABLE}", path)
+    log.info("Published Analysis %s → %s", path, f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_ANALYSIS_TABLE}")
 
 
 def publish_upload(path: Path):
@@ -78,31 +87,11 @@ def publish_upload(path: Path):
     )
     client.write(point)
     utils.set_field(data.get("filename"), "published_upload", 1)
-    print(f"[publisher] published upload: {config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_UPLOADS_TABLE}", path)
-
-# Consumer loop for analysis results: dequeues and calls publish_analysis
-def consume_analysis():
-    while True:
-        path = analysis_publish_queue.get()
-        try:
-            publish_analysis(path)
-        finally:
-            analysis_publish_queue.task_done()
-
-
-# Consumer loop for upload links: dequeues and calls publish_upload
-def consume_uploads():
-    while True:
-        path = uploads_publish_queue.get()
-        try:
-            publish_upload(path)
-        finally:
-            uploads_publish_queue.task_done()
-
+    log.info("Published Upload %s → %s", path, f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_UPLOADS_TABLE}")
 
 
 def analysis_manual_pass(path: Path):
-    print("[publisher] running analysis initial pass...")
+    log.info("Running manual pass for analysis publisher")
     
     # find all unpublished analysis results registered in the DB
     for analysis_path in utils.get_unpublished_analysis():
@@ -110,17 +99,17 @@ def analysis_manual_pass(path: Path):
         if(analysis_path.exists()):
             # enqeue only if not already queued
             if analysis_path not in list(analysis_publish_queue.queue):
-                print(f"[publisher] Unpublished analysis file found: {analysis_path}. Adding it to the queue.")
+                log.info("Queueing unpublished analysis file: %s", analysis_path)
                 analysis_publish_queue.put(analysis_path)
         else:
-            print(f"[publisher] A deleted unpublished analysis file was found: {analysis_path}")
-
-    print("[publisher] analysis initial pass done!")
+            log.warning("Missing file for analysis DB entry: %s", analysis_path)
+    
+    log.info("Analysis publisher manual pass complete")
 
 
 
 def upload_manual_pass(path: Path):
-    print("[publisher] upload running initial pass...")
+    log.info("Running manual pass for upload publisher")
 
     # find all unpublished analysis results registered in the DB
     for upload_path in utils.get_unpublished_upload():
@@ -128,19 +117,15 @@ def upload_manual_pass(path: Path):
         if(upload_path.exists()):
             # enqeue only if not already queued
             if upload_path not in list(uploads_publish_queue.queue):
-                print(f"[publisher] Unpublished upload file found: {upload_path}. Adding it to the queue.")
+                log.info("Queueing unpublished upload file: %s", upload_path)
                 uploads_publish_queue.put(upload_path)
         else:
-            print(f"[publisher] A deleted unpublished upload file was found: {upload_path}")
+            log.warning("Missing file for upload DB entry: %s", upload_path)
 
-    print("[publisher] upload initial pass done!")
+    log.info("Upload publisher manual pass complete")
 
 
 def main():
-    # Start consumer threads
-    Thread(target=consume_analysis, daemon=True).start()
-    Thread(target=consume_uploads, daemon=True).start()
-
     analysis_manual_pass(Path(str(config.ANALYSIS_DIR)))
     upload_manual_pass(Path(str(config.UPLOADS_DIR)))
 
@@ -148,10 +133,16 @@ def main():
     observer.schedule(AnalysisHandler(), str(config.ANALYSIS_DIR), recursive=False)
     observer.schedule(UploadHandler(), str(config.UPLOADS_DIR), recursive=False)
     observer.start()
-    print("[publisher] watching analysis & uploads dirs…")
+    log.info("Publisher watching %s and %s", str(config.ANALYSIS_DIR), str(config.UPLOADS_DIR))
 
     try:
         while True:
+            if not analysis_publish_queue.empty():
+                publish_analysis(analysis_publish_queue.get())
+                analysis_publish_queue.task_done()
+            if not uploads_publish_queue.empty():
+                publish_upload(uploads_publish_queue.get())
+                uploads_publish_queue.task_done()
             time.sleep(1)
     finally:
         observer.stop()

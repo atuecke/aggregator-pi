@@ -8,6 +8,14 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from . import config, utils
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+utils.setup_logging()  # Initialise global logging once per process
+import logging
+log = logging.getLogger("ANALYZER")
+# ---------------------------------------------------------------------------
+
 
 # FIFO queue for paths to analyze
 analyze_queue: queue.Queue[Path] = queue.Queue()
@@ -50,15 +58,15 @@ def analyze(path: Path):
 
         # update the SQLite DB
         utils.set_field(path.name, "analyzed", str(out_path))
-        print("[analyzer]", path, "→", out_path)
+        log.info("Analyzed %s → %s", path.name, out_path)
 
     except Exception as exc:
-        print("[analyzer] error while processing", path, exc)
+       log.exception("Error while processing %s", path.name)
 
 
 
 def manual_pass(path: Path):
-    print("[analyzer] running manual pass...")
+    log.info("Running manual pass for existing files")
     
     # make sure all recordings are registered in DB
     for wav in path.glob("*.wav"):
@@ -72,12 +80,12 @@ def manual_pass(path: Path):
         if(recording_path.exists()):
             # enqeue only if not already queued
             if recording_path not in list(analyze_queue.queue):
-                print(f"[analyzer] unanalyzed file found: {recording_path}. Adding it to the queue.")
+                log.info("Queueing previously‑unprocessed file: %s", recording_path)
                 analyze_queue.put(recording_path)
         else:
-            print(f"[analyzer] deleted unanalyzed file found: {recording_path}")
+            log.warning("DB entry references missing file: %s", recording_path)
     
-    print("[analyzer] manual pass done!")
+    log.info("Manual pass complete")
 
 def main():
     recordings_dir = str(config.RECORDINGS_DIR)
@@ -86,7 +94,7 @@ def main():
     observer = Observer()
     observer.schedule(Handler(), recordings_dir, recursive=False)
     observer.start()
-    print("[analyzer] watching", recordings_dir)
+    log.info("Watching %s", recordings_dir)
 
 
     try:

@@ -7,9 +7,17 @@ import time, datetime as dt, random, wave, os, shutil
 from pathlib import Path
 from . import config, utils
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+utils.setup_logging()  # Initialise global logging once per process
+import logging
+log = logging.getLogger("RECEIVER")
+# ---------------------------------------------------------------------------
+
+
 SAMPLE_RATE = 16_000   # 16 kHz mono
 DURATION    = 5        # seconds per snippet
-
 
 def generate_recording():
     ts        = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -29,7 +37,7 @@ def generate_recording():
     # this prevents the analyzer from trying to read it before it is done being written
     shutil.move(tmp_path, finalPath)
     utils.ensure_row(filename)
-    print("[receiver] new recording", finalPath)
+    log.info("New recording %s", finalPath)
 
 
 def main():

@@ -7,12 +7,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python requirements
-RUN pip install --no-cache-dir watchdog influxdb3-python psutil
+RUN pip install --no-cache-dir watchdog influxdb3-python psutil PyYAML
 
 # Copy files
 WORKDIR /app
 COPY app ./app
 COPY supervisord.conf ./
+COPY logging.yaml /etc/iot/
 
 # Expose default Telegraf port
 EXPOSE 8125

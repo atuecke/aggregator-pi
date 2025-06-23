@@ -12,6 +12,16 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from . import config, utils
 
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+utils.setup_logging()  # Initialise global logging once per process
+import logging
+log = logging.getLogger("UPLOADER")
+# ---------------------------------------------------------------------------
+
+
 # FIFO queue for paths to upload
 upload_queue: queue.Queue[Path] = queue.Queue()
 
@@ -43,15 +53,15 @@ def upload(path: Path):
         out_path = config.UPLOADS_DIR / f"{path.stem}.json"
         out_path.write_text(json.dumps(pointer, indent=2))
         utils.set_field(path.name, "uploaded", str(out_path))
-        print("[uploader]", path, "→", remote_path)
+        log.info("Uploaded %s → %s", path, remote_path)
         path.unlink(missing_ok=True)
         utils.set_field(path.name, "deleted", 1)
     else:
-        print("[uploader] FAILED", path, result.stderr)
+        log.error("Upload failed for %s: %s", path, result.stderr)
 
 
 def manual_pass(path: Path):
-    print("[uploader] running manual pass...")
+    log.info("Running manual pass for uploader")
 
     # make sure all recordings are registered in DB
     for wav in path.glob("*.wav"):
@@ -65,12 +75,12 @@ def manual_pass(path: Path):
         if(recording_path.exists()):
             # enqeue only if not already queued
             if recording_path not in list(upload_queue.queue):
-                print(f"[uploader] unuploaded file found: {recording_path}. Adding it to the queue.")
+                log.info("Queueing unuploaded file: %s", recording_path)
                 upload_queue.put(recording_path)
         else:
-            print(f"[uploader] deleted unuploaded file found: {recording_path}")
+            log.warning("Missing file for DB entry: %s", recording_path)
     
-    print("[uploader] manual pass done!")
+    log.info("Uploader manual pass complete")
 
 
 def main():
@@ -80,7 +90,7 @@ def main():
     observer = Observer()
     observer.schedule(Handler(), recordings_dir, recursive=False)
     observer.start()
-    print("[uploader] watching", recordings_dir)
+    log.info("Uploader watching %s", recordings_dir)
 
     try:
         while True:
