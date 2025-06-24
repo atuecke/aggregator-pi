@@ -4,6 +4,7 @@ from pathlib import Path
 
 AGGREGATOR_UUID = os.getenv("AGGREGATOR_UUID")
 METRICS_INTERVAL_SEC = os.getenv("METRICS_INTERVAL_SEC", 30)
+PUBLISH_INTERVAL_SEC = os.getenv("PUBLISH_INTERVAL_SEC", 10)
 
 # --- I/O directories ---------------------------------------------------------
 BASE_DIR = Path(os.getenv("BASE_DIR", "/data"))
@@ -13,7 +14,7 @@ ANALYSIS_DIR        = BASE_DIR / "analysis"   # analyzer output
 UPLOADS_DIR         = BASE_DIR / "uploads"   # uploader output
 LOGS_DIR            = BASE_DIR / "logs"
 LOG_PATH            = BASE_DIR / "metrics.log"
-DB_PATH             = BASE_DIR / "recordings.sqlite3"
+DB_PATH             = BASE_DIR / "jobs.sqlite3"
 
 
 # --- InfluxDB 3 connection ---------------------------------------------------

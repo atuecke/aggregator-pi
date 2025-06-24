@@ -19,6 +19,13 @@ handlers:
     when: midnight
     backupCount: 7
     level: DEBUG
+  
+# Suppress overly verbose logs from watchdog library
+loggers:
+  watchdog:
+    level: WARNING
+    handlers: [file]
+    propagate: false
 
 root:
   level: DEBUG

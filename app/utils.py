@@ -6,11 +6,13 @@ import logging
 import logging.config
 import os
 import yaml
+import inspect
 import sqlite3
 import contextlib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import time
+import datetime as dt
 
 from . import config
 
@@ -39,21 +41,26 @@ def setup_logging(
     else:
         logging.basicConfig(level=default_level)
 
+logger = logging.getLogger("app.utils")
 
 # ---------------------------------------------------------------------------
 # SQLite schema for recordings lifecycle tracking
 # ---------------------------------------------------------------------------
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS recordings (
-    filename TEXT PRIMARY KEY,
-    analyzed TEXT,
-    uploaded TEXT,
-    published_analysis INTEGER,
-    published_upload INTEGER,
-    deleted INTEGER
+CREATE TABLE IF NOT EXISTS jobs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename      TEXT NOT NULL,
+  type          TEXT NOT NULL,         -- 'analyze', 'upload',
+  payload       JSON,                  -- any extra data (could be your metadata JSON)
+  status        TEXT NOT NULL DEFAULT 'pending',  -- 'pending' → 'running' → 'done' → 'error'
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT
 );
 """
+
+# CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
+# CREATE INDEX IF NOT EXISTS idx_jobs_filename_type ON jobs(filename, type);
 
 @contextlib.contextmanager
 def get_conn():
@@ -70,84 +77,118 @@ def get_conn():
 with get_conn() as conn:
     conn.executescript(SCHEMA)
 
+# ---------------------------------------------------------------------------
+# Helper for profiling
+# ---------------------------------------------------------------------------
+
+def _log_sql(label: str, start: float) -> None:
+    stack = inspect.stack()
+    caller_frame = stack[2]
+    caller_file = Path(caller_frame.filename).name
+    if(caller_file == "utils.py"): return
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.debug("SQL %s called from %s took %.2f ms", label, caller_file, elapsed_ms)
+
 
 # ---------------------------------------------------------------------------
-# High‑level helpers
+# Job-level helpers
 # ---------------------------------------------------------------------------
+def _now() -> str:
+    return dt.datetime.utcnow().isoformat() + "Z"
 
-def ensure_row(filename: str) -> None:
-    """Insert a new row if it doesn't exist."""
+def job_exists(filename: str, job_type: str, status: str | None = None) -> bool:
+    sql = "SELECT 1 FROM jobs WHERE filename=? AND type=?"
+    params: list[Any] = [filename, job_type]
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    
     start = time.perf_counter()
     with get_conn() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO recordings(filename) VALUES(?)",
-            (filename,)
+        cur = conn.execute(sql + " LIMIT 1", tuple(params))
+        _log_sql(f"job_exists for {filename} {job_type}", start)
+        return cur.fetchone() is not None
+    
+
+def create_job(filename: str, job_type: str, payload: dict[str, Any] | None = None) -> int:
+    """Insert a *pending* job if one isn't already pending/done for that step."""
+    start = time.perf_counter()
+    if job_exists(filename, job_type, status="pending") or job_exists(filename, job_type, status="running"):
+        logger.warning("Attempted to create an already existing job %s %s", filename, job_type)
+        return -1  # caller may ignore
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO jobs(filename, type, payload, status, created_at, updated_at)"\
+            " VALUES(?,?,?,?,?,?)",
+            (
+                filename,
+                job_type,
+                json.dumps(payload or {}),
+                "pending",
+                _now(),
+                _now(),
+            ),
         )
         conn.commit()
-    logging.getLogger(__name__).debug(
-        "SQLite ensure_row for '%s' took %.2f ms", filename, (time.perf_counter() - start) * 1000
-    )
+    
+    _log_sql(f"create_job for {filename} {job_type}", start)
+    return cur.lastrowid
+    
 
-def set_field(filename: str, field: str, value: Any) -> None:
-    """Update a single column for a given filename."""
+def set_job_status_by_filename_type(
+    filename: str,
+    job_type: str,
+    status: str,
+    payload_update: dict[str, Any] | None = None,
+) -> None:
+    """Update status (and optionally payload) for a job identified by (filename, type)
+    that is *not already done*. We operate on the most recent matching row."""
     start = time.perf_counter()
     with get_conn() as conn:
-        conn.execute(
-            f"UPDATE recordings SET {field} = ? WHERE filename = ?",
-            (value, filename)
+        cur = conn.execute(
+            "SELECT id, payload FROM jobs WHERE filename=? AND type=? ORDER BY id DESC LIMIT 1",
+            (filename, job_type),
         )
+        row = cur.fetchone()
+        if row is None:
+            logger.warning("Attempted to set status of an undefined job %s %s", filename, job_type)
+            return
+        job_id, existing_payload = row
+        if payload_update:
+            try:
+                merged = {**json.loads(existing_payload or "{}"), **payload_update}
+            except Exception:
+                merged = payload_update  # fallback – shouldn't happen
+            payload_json = json.dumps(merged)
+            conn.execute(
+                "UPDATE jobs SET status=?, payload=?, updated_at=? WHERE id=?",
+                (status, payload_json, _now(), job_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET status=?, updated_at=? WHERE id=?",
+                (status, _now(), job_id),
+            )
         conn.commit()
-    logging.getLogger(__name__).debug(
-        "SQLite update '%s' for '%s' took %.2f ms", field, filename, (time.perf_counter() - start) * 1000
-    )
+    _log_sql(f"set_job_status of {filename} {job_type} to {status}", start)
 
 
-def row(filename: str) -> Dict[str, Any]:
-    """Fetch the recording's row as a dict, or {} if not found."""
+def get_pending_jobs(job_type: str) -> List[Dict[str, Any]]:
+    start = time.perf_counter()
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM recordings WHERE filename = ?",
-            (filename,)
+            "SELECT id, filename, payload FROM jobs WHERE type=? AND status='pending' ORDER BY id",
+            (job_type,),
         )
-        result = cur.fetchone()
-    return dict(result) if result else {}
+        cols = [c[0] for c in cur.description]
+        _log_sql("get_pending_jobs", start)
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    
+        
 
-def get_unanalyzed() -> list[str]:
-    """Return list[filename] that haven't been marked as analyzed in the DB"""
-    
-    with get_conn() as conn:
-        cur = conn.execute("SELECT filename FROM recordings WHERE analyzed IS NULL")
-        return [row[0] for row in cur.fetchall()]
-    
-def get_unuploaded() -> list[str]:
-    """Return list[filename] that haven't been marked as uploaded in the DB"""
-    
-    with get_conn() as conn:
-        cur = conn.execute("SELECT filename FROM recordings WHERE uploaded IS NULL")
-        return [row[0] for row in cur.fetchall()]
-
-def get_unpublished_analysis() -> List[Path]:
-    """
-    Return a list of result JSON Paths in RESULTS_DIR that haven't been published to InfluxDB yet.
-    """
-    with get_conn() as conn:
-        cur = conn.execute(
-            "SELECT analyzed FROM recordings "
-            "WHERE analyzed IS NOT NULL AND published_analysis IS NULL"
-        )
-        return [Path(row[0]) for row in cur.fetchall()]
-    
-def get_unpublished_upload() -> List[Path]:
-    """
-    Return a list of result JSON Paths in UPLOAD_DIR that haven't been published to InfluxDB yet.
-    """
-    with get_conn() as conn:
-        cur = conn.execute(
-            "SELECT uploaded FROM recordings "
-            "WHERE uploaded IS NOT NULL AND published_upload IS NULL"
-        )
-        return [Path(row[0]) for row in cur.fetchall()]
-
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
 
 def get_listener_id_from_name(name: str):
     return name.split('_', 1)[0]

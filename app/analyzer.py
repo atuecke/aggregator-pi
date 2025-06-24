@@ -13,7 +13,7 @@ from . import config, utils
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("ANALYZER")
+log = logging.getLogger("app.analyzer")
 # ---------------------------------------------------------------------------
 
 
@@ -28,12 +28,14 @@ class Handler(FileSystemEventHandler):
             return
         path = Path(event.src_path)
         if(path.suffix.lower() == ".wav"):
+            log.debug("Found new recording %s, adding to the analuze queue", path.name)
             # enqeue only if not already queued
             if path not in list(analyze_queue.queue):
                 analyze_queue.put(path)
 
 
 def analyze(path: Path):
+    log.debug("Attempting to analyze recording %s", path.name)
     try:
         # parse recorded timestamp from filename (format: rec_YYYYMMDDTHHMMSSZ.wav)
         rec_str = path.stem.split("_", 1)[1]
@@ -44,57 +46,44 @@ def analyze(path: Path):
         # extract metadata
         with wave.open(str(path)) as wf:
             duration = wf.getnframes() / wf.getframerate()
-            meta = {
-                "filename": path.name,
-                "recorded_timestamp": recorded_timestamp,
-                "analyzed_timestamp": analyzed_timestamp,
-                "duration_sec": duration,
-                "listener_id": utils.get_listener_id_from_name(path.name)
-            }
         
-        # write to the json file
-        out_path = config.ANALYSIS_DIR / f"{path.stem}.json"
-        out_path.write_text(json.dumps(meta, indent=2))
-
-        # update the SQLite DB
-        utils.set_field(path.name, "analyzed", str(out_path))
-        log.info("Analyzed %s → %s", path.name, out_path)
+        meta = {
+            "filename": path.name,
+            "recorded_timestamp": recorded_timestamp,
+            "analyzed_timestamp": analyzed_timestamp,
+            "duration_sec": duration,
+            "listener_id": utils.get_listener_id_from_name(path.name)
+        }
+        utils.set_job_status_by_filename_type(path.name, "analyze", "done", meta)
+        utils.create_job(path.name, "publish_analysis", meta)
+        
+        log.info("Analyzed %s (payload stored in DB)", path.name)
 
     except Exception as exc:
-       log.exception("Error while processing %s", path.name)
+       utils.set_job_status_by_filename_type(path.name, "analyze", "error", {"error": str(exc)})
+       log.exception("Failed to analyze %s", path.name)
 
 
 
-def manual_pass(path: Path):
+def manual_pass():
     log.info("Running manual pass for existing files")
+    path = config.RECORDINGS_DIR
     
     # make sure all recordings are registered in DB
     for wav in path.glob("*.wav"):
-        utils.ensure_row(wav.name)
-
-    # find all unanalyzed files registered in the DB
-    for filename in utils.get_unanalyzed():
-        recording_path = config.RECORDINGS_DIR / filename
-
-        # make sure the file actually exists
-        if(recording_path.exists()):
-            # enqeue only if not already queued
-            if recording_path not in list(analyze_queue.queue):
-                log.info("Queueing previously‑unprocessed file: %s", recording_path)
-                analyze_queue.put(recording_path)
-        else:
-            log.warning("DB entry references missing file: %s", recording_path)
+        if not utils.job_exists(wav.name, "analyze"):
+            utils.create_job(wav.name, "analyze", {"local_path": str(wav)})
+            analyze_queue.put(wav)
     
     log.info("Manual pass complete")
 
 def main():
-    recordings_dir = str(config.RECORDINGS_DIR)
-    manual_pass(Path(recordings_dir))
+    manual_pass()
 
     observer = Observer()
-    observer.schedule(Handler(), recordings_dir, recursive=False)
+    observer.schedule(Handler(), str(config.RECORDINGS_DIR), recursive=False)
     observer.start()
-    log.info("Watching %s", recordings_dir)
+    log.info("Analyzer Watchdog %s", str(config.RECORDINGS_DIR))
 
 
     try:

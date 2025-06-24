@@ -12,7 +12,7 @@ from . import config, utils
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("RECEIVER")
+log = logging.getLogger("app.receiver")
 # ---------------------------------------------------------------------------
 
 
@@ -23,7 +23,7 @@ def generate_recording():
     ts        = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename  = f"listener01_{ts}.wav"
     tmp_path  = config.RECORDINGS_TMP_DIR / filename
-    finalPath = config.RECORDINGS_DIR     / filename
+    final_path = config.RECORDINGS_DIR     / filename
 
     # write white‑noise
     frames = (random.randint(-32768, 32767) for _ in range(SAMPLE_RATE * DURATION))
@@ -32,12 +32,17 @@ def generate_recording():
         wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(b"".join(int(i).to_bytes(2, "little", signed=True) for i in frames))
+    log.debug("Saved new recording to temporary file %s", tmp_path)
+    
+    payload = {"local_path": str(final_path)}
+    utils.create_job(filename, "analyze", payload)
+    utils.create_job(filename, "upload",  payload)
 
     # move into live directory (atomic on same filesystem)
     # this prevents the analyzer from trying to read it before it is done being written
-    shutil.move(tmp_path, finalPath)
-    utils.ensure_row(filename)
-    log.info("New recording %s", finalPath)
+    shutil.move(tmp_path, final_path)
+
+    log.info("New recording %s", final_path)
 
 
 def main():

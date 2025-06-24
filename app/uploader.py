@@ -18,7 +18,7 @@ from . import config, utils
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("UPLOADER")
+log = logging.getLogger("app.uploader")
 # ---------------------------------------------------------------------------
 
 
@@ -31,6 +31,7 @@ class Handler(FileSystemEventHandler):
             return
         path = Path(event.src_path)
         if(path.suffix.lower() == ".wav"):
+            log.debug("Found new recording %s, adding to the upload queue", path.name)
             # enqeue only if not already queued
             if path not in list(upload_queue.queue):
                 upload_queue.put(path)
@@ -38,6 +39,7 @@ class Handler(FileSystemEventHandler):
 
 
 def upload(path: Path):
+    log.debug("Attempting to upload recording %s", path.name)
     remote_path = f"{config.RCLONE_REMOTE_BUCKET}/{config.AGGREGATOR_UUID}/{path.name.split('_', 1)[0]}/{path.name}"
     result = subprocess.run(
         ["rclone", "copyto", str(path), remote_path],
@@ -50,47 +52,35 @@ def upload(path: Path):
             "uploaded_at": dt.datetime.utcnow().isoformat() + "Z",
             "listener_id": utils.get_listener_id_from_name(path.name)
         }
-        out_path = config.UPLOADS_DIR / f"{path.stem}.json"
-        out_path.write_text(json.dumps(pointer, indent=2))
-        utils.set_field(path.name, "uploaded", str(out_path))
+        utils.set_job_status_by_filename_type(path.name, "upload", "done", pointer)
+        utils.create_job(path.name, "publish_upload", pointer)
         log.info("Uploaded %s → %s", path, remote_path)
-        path.unlink(missing_ok=True)
-        utils.set_field(path.name, "deleted", 1)
+        # path.unlink(missing_ok=True)
     else:
+        utils.set_job_status_by_filename_type(path.name, "upload", "error", {"stderr": result.stderr})
         log.error("Upload failed for %s: %s", path, result.stderr)
 
 
-def manual_pass(path: Path):
+def manual_pass():
     log.info("Running manual pass for uploader")
-
+    path = config.UPLOADS_DIR
+    
     # make sure all recordings are registered in DB
     for wav in path.glob("*.wav"):
-        utils.ensure_row(wav.name)
-    
-    # find all unuploaded files registered in the DB
-    for filename in utils.get_unuploaded():
-        recording_path = config.UPLOADS_DIR / filename
-
-        # make sure the file actually exists
-        if(recording_path.exists()):
-            # enqeue only if not already queued
-            if recording_path not in list(upload_queue.queue):
-                log.info("Queueing unuploaded file: %s", recording_path)
-                upload_queue.put(recording_path)
-        else:
-            log.warning("Missing file for DB entry: %s", recording_path)
+        if not utils.job_exists(wav.name, "upload"):
+            utils.create_job(wav.name, "upload", {"local_path": str(wav)})
+            upload_queue.put(wav)
     
     log.info("Uploader manual pass complete")
 
 
 def main():
-    recordings_dir = str(config.RECORDINGS_DIR)
-    manual_pass(Path(recordings_dir))
+    manual_pass()
     
     observer = Observer()
-    observer.schedule(Handler(), recordings_dir, recursive=False)
+    observer.schedule(Handler(), str(config.RECORDINGS_DIR), recursive=False)
     observer.start()
-    log.info("Uploader watching %s", recordings_dir)
+    log.info("Uploader Watchdog %s", str(config.RECORDINGS_DIR))
 
     try:
         while True:

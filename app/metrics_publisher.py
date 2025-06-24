@@ -10,7 +10,7 @@ from . import config, utils
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("METRICS_PUBLISHER")
+log = logging.getLogger("app.metrics_publisher")
 # ---------------------------------------------------------------------------
 
 
@@ -25,6 +25,7 @@ LOG_PATH = Path(config.LOG_PATH)
 
 def push_metrics():
     while True:
+        log.debug("Gathering system metrics...")
         ts   = dt.datetime.utcnow()
         cpu  = psutil.cpu_percent()
         mem  = psutil.virtual_memory().percent
