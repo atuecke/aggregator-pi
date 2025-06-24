@@ -40,6 +40,8 @@ class Handler(FileSystemEventHandler):
 
 def upload(path: Path):
     log.debug("Attempting to upload recording %s", path.name)
+    utils.set_job_status_by_filename_type(path.name, "upload", "running")
+    
     remote_path = f"{config.RCLONE_REMOTE_BUCKET}/{config.AGGREGATOR_UUID}/{path.name.split('_', 1)[0]}/{path.name}"
     result = subprocess.run(
         ["rclone", "copyto", str(path), remote_path],

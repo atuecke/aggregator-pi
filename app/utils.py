@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import time
 import datetime as dt
+from functools import lru_cache
 
 from . import config
 
@@ -51,27 +52,33 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   filename      TEXT NOT NULL,
-  type          TEXT NOT NULL,         -- 'analyze', 'upload',
-  payload       JSON,                  -- any extra data (could be your metadata JSON)
+  type          TEXT NOT NULL,         -- 'analyze', 'upload', 'publish_analysis', 'publish_upload'
+  payload       JSON,                  -- any extra data
   status        TEXT NOT NULL DEFAULT 'pending',  -- 'pending' → 'running' → 'done' → 'error'
   created_at    TEXT NOT NULL,
   updated_at    TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
+CREATE INDEX IF NOT EXISTS idx_jobs_filename_type ON jobs(filename, type);
 """
 
-# CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
-# CREATE INDEX IF NOT EXISTS idx_jobs_filename_type ON jobs(filename, type);
+def _persistent_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(config.DB_PATH, timeout=12, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;") # first couple inserts/queries take a very long time and this reduces it, but tiny risk on power-loss
+    return conn
 
 @contextlib.contextmanager
 def get_conn():
-    """Context manager for SQLite connection using WAL journaling."""
-    conn = sqlite3.connect(config.DB_PATH, timeout=12)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    # conn.execute("PRAGMA synchronous=NORMAL;") # first couple inserts/queries take a very long time and this reduces it, but tiny risk on power-loss
+    """Context manager for SQLite connection using WAL journaling.
+    Reuse a single connection instead of opening/closing every query."""
+
+    conn = _persistent_conn()
     try:
         yield conn
     finally:
-        conn.close()
+        pass
 
 # Initialize DB schema on import
 with get_conn() as conn:
@@ -181,7 +188,7 @@ def get_pending_jobs(job_type: str) -> List[Dict[str, Any]]:
             (job_type,),
         )
         cols = [c[0] for c in cur.description]
-        _log_sql("get_pending_jobs", start)
+        _log_sql(f"get_pending_jobs for {job_type}", start)
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     
         

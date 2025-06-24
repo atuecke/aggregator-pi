@@ -34,6 +34,7 @@ def publish_analysis_jobs():
     for job in utils.get_pending_jobs("publish_analysis"):
         filename = job["filename"]
         log.debug("New pending publish analysis job found for %s", filename)
+        utils.set_job_status_by_filename_type(filename, "publish_analysis", "running")
 
         raw = job.get("payload")
         try:
@@ -50,8 +51,13 @@ def publish_analysis_jobs():
                  .field("data", json.dumps(data))
                  .time(data.get("analyzed_timestamp")))
         client.write(point)
-        log.info("Published analysis for %s", filename)
-        utils.set_job_status_by_filename_type(filename, "publish_analysis", "done")
+
+        meta = {
+            "published_to": f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_ANALYSIS_TABLE}",
+            "published_ts": f"{dt.datetime.utcnow().isoformat()}Z"
+        }
+        log.info("Published analysis for %s to %s", filename, meta["published_to"])
+        utils.set_job_status_by_filename_type(filename, "publish_analysis", "done", meta)
 
 
 def publish_upload_jobs():
@@ -59,6 +65,7 @@ def publish_upload_jobs():
     for job in utils.get_pending_jobs("publish_upload"):
         filename = job["filename"]
         log.debug("New pending publish upload job found for %s", filename)
+        utils.set_job_status_by_filename_type(filename, "publish_upload", "running")
 
         raw = job.get("payload")
         try:
@@ -77,8 +84,13 @@ def publish_upload_jobs():
                  .field("data", json.dumps(data))
                  .time(data.get("uploaded_at")))
         client.write(point)
-        log.info("Published upload for %s", filename)
-        utils.set_job_status_by_filename_type(filename, "publish_upload", "done")
+
+        meta = {
+            "published_to": f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_UPLOADS_TABLE}",
+            "published_ts": f"{dt.datetime.utcnow().isoformat()}Z"
+        }
+        log.info("Published upload for %s at %s", filename, meta)
+        utils.set_job_status_by_filename_type(filename, "publish_upload", "done", meta)
 
 
 def main():

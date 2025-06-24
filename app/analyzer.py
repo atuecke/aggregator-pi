@@ -28,7 +28,7 @@ class Handler(FileSystemEventHandler):
             return
         path = Path(event.src_path)
         if(path.suffix.lower() == ".wav"):
-            log.debug("Found new recording %s, adding to the analuze queue", path.name)
+            log.debug("Found new recording %s, adding to the analyze queue", path.name)
             # enqeue only if not already queued
             if path not in list(analyze_queue.queue):
                 analyze_queue.put(path)
@@ -36,6 +36,8 @@ class Handler(FileSystemEventHandler):
 
 def analyze(path: Path):
     log.debug("Attempting to analyze recording %s", path.name)
+    utils.set_job_status_by_filename_type(path.name, "analyze", "running")
+
     try:
         # parse recorded timestamp from filename (format: rec_YYYYMMDDTHHMMSSZ.wav)
         rec_str = path.stem.split("_", 1)[1]
@@ -66,7 +68,7 @@ def analyze(path: Path):
 
 
 def manual_pass():
-    log.info("Running manual pass for existing files")
+    log.info("Running manual pass for analyzer")
     path = config.RECORDINGS_DIR
     
     # make sure all recordings are registered in DB
@@ -75,7 +77,7 @@ def manual_pass():
             utils.create_job(wav.name, "analyze", {"local_path": str(wav)})
             analyze_queue.put(wav)
     
-    log.info("Manual pass complete")
+    log.info("Analyzer manual pass complete")
 
 def main():
     manual_pass()
