@@ -5,6 +5,7 @@ from pathlib import Path
 AGGREGATOR_UUID = os.getenv("AGGREGATOR_UUID")
 METRICS_INTERVAL_SEC = os.getenv("METRICS_INTERVAL_SEC", 30)
 PUBLISH_INTERVAL_SEC = os.getenv("PUBLISH_INTERVAL_SEC", 10)
+GENERATE_MOCK_AUDIO = os.getenv("GENERATE_MOCK_AUDIO", "false")
 
 # --- I/O directories ---------------------------------------------------------
 BASE_DIR = Path(os.getenv("BASE_DIR", "/data"))
@@ -25,6 +26,10 @@ INFLUX_RECORDINGS_BUCKET = os.getenv("INFLUX_RECORDINGS_BUCKET")
 INFLUX_METRICS_BUCKET = os.getenv("INFLUX_METRICS_BUCKET")
 INFLUX_ANALYSIS_TABLE = os.getenv("INFLUX_ANALYSIS_TABLE", "analysis")
 INFLUX_UPLOADS_TABLE = os.getenv("INFLUX_UPLOADS_TABLE", "uploads")
+
+
+# --- Listener Connection ----------------------------------------------------
+RECORDINGS_ENDPOINT = os.getenv("RECORDINGS_ENDPOINT", "/recording_endpoint")
 
 # --- Object store -----------------------------------------------------------
 RCLONE_REMOTE_BUCKET = os.getenv("RCLONE_REMOTE_BUCKET", "s3:my-bucket/data")

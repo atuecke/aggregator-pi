@@ -53,9 +53,10 @@ def generate_recording():
 
 
 def main():
-    while True:
-        generate_recording()
-        time.sleep(10)
+        while True:
+            if config.GENERATE_MOCK_AUDIO == "true":
+                generate_recording()
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
