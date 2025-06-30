@@ -28,6 +28,8 @@ def push_metrics():
     log.debug("Gathering system metrics...")
 
     cpu  = psutil.cpu_percent()
+    per_core = psutil.cpu_percent(percpu=True)
+
     mem  = psutil.virtual_memory().percent
     disk = psutil.disk_usage(str(config.BASE_DIR)).percent
 
@@ -56,6 +58,7 @@ def push_metrics():
         Point("pi_metrics")
         .tag("aggregator_uuid", config.AGGREGATOR_UUID)
         .field("cpu (%)", cpu)
+        .field("cpu cores (%)", json.dumps(per_core))
         .field("mem (%)", mem)
         .field("disk (%)", disk)
         .field("bytes_sent", delta_sent)
@@ -67,7 +70,7 @@ def push_metrics():
         .time(ts)
     )
     client.write(point)
-    METRICS_LOG_PATH.write_text(json.dumps(point.to_line_protocol()))
+    METRICS_LOG_PATH.write_text(json.dumps(point.to_line_protocol()) + "\n")
     log.info("Metrics pushed at %s", ts)
         
 

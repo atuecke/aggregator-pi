@@ -4,122 +4,94 @@ we see it; no more arbitrary sleep."""
 
 import json, wave, datetime as dt, queue, signal, sys
 from pathlib import Path
-from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from . import config, utils
 from birdnetlib import Recording
 from birdnetlib.analyzer import Analyzer
 import time
+import os
 
+
+
+WORKER_ID = int(os.getenv("WORKER_ID", "0"))   # set by Supervisor
+_analyzer = Analyzer()                         # model loads once here 
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("app.analyzer")
+log = logging.getLogger(f"app.analyzer_{WORKER_ID}")
 # ---------------------------------------------------------------------------
 
 
 # FIFO queue for paths to analyze
 analyze_queue: queue.Queue[Path] = queue.Queue()
 
-# ---------------------------------------------------------------------------
-# Initialize BirdNET Analyzer once (loads model)
-# ---------------------------------------------------------------------------
-analyzer = Analyzer()
 
-# event callback for when a new recording is found
-class Handler(FileSystemEventHandler):
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if(path.suffix.lower() == ".wav"):
-            log.debug("Found new recording %s, adding to the analyze queue", path.name)
-            # enqeue only if not already queued
-            if path not in list(analyze_queue.queue):
-                analyze_queue.put(path)
+def analyze_job(job: dict):
+    filename = job["filename"]
+    path = Path(config.RECORDINGS_DIR / filename)
 
-
-def analyze(path: Path):
-    log.debug("Starting analysis for %s", path.name)
-    utils.set_job_status_by_filename_type(path.name, "analyze", "running")
+    log.debug("Starting analysis for %s on worker %s", filename, WORKER_ID)
+    utils.set_job_status_by_filename_type(filename, "analyze", "running")
 
     try:
+        with wave.open(str(path)) as wf:
+            duration = wf.getnframes() / wf.getframerate()
+
         # parse recorded timestamp from filename (format: rec_YYYYMMDDTHHMMSSZ.wav)
         rec_str = path.stem.split("_", 1)[1]
         recorded_dt = dt.datetime.strptime(rec_str, "%Y%m%dT%H%M%SZ")
         recorded_timestamp = recorded_dt.isoformat() + "Z"
         analyzed_timestamp = dt.datetime.utcnow().isoformat() + "Z"
 
-        log.debug("Running BirdNET inference %s", path.name)
         start = time.perf_counter()
-        recording = Recording(
-            analyzer,
+        rec = Recording(
+            _analyzer,
             str(path),
-            lat=0.0, lon=0.0,
+            lat=0.0,
+            lon=0.0,
             date=dt.datetime.utcnow(),
             min_conf=0.25,
         )
-        recording.analyze()
-        detections = recording.detections  # list of {'species':..., 'confidence':..., 'start_time':..., 'end_time':...}
-
-        # extract metadata
-        with wave.open(str(path)) as wf:
-            duration = wf.getnframes() / wf.getframerate()
-        
-        log.debug("BirdNET took %dms to analyze %d seconds: %s", (time.perf_counter() - start) * 1000, duration, path.name)
+        rec.analyze()
+        log.debug("BirdNET on worker %s took %dms to analyze %d seconds: %s", WORKER_ID, (time.perf_counter() - start) * 1000, duration, filename)
 
         meta = {
-            "filename": path.name,
+            "filename": filename,
             "recorded_timestamp": recorded_timestamp,
             "analyzed_timestamp": analyzed_timestamp,
             "duration_sec": duration,
             "listener_id": utils.get_listener_id_from_name(path.name),
-            "detections": detections,
+            "detections": rec.detections,
         }
 
-        utils.set_job_status_by_filename_type(path.name, "analyze", "done", meta)
-        utils.create_job(path.name, utils.get_listener_id_from_name(path.name), "publish_analysis", meta)
-        
-        log.info("Analyzed %s (payload stored in DB) and found %d detections", path.name, len(detections))
-
+        utils.set_job_status_by_filename_type(
+            filename, "analyze", "done", meta
+        )
+        utils.create_job(
+            filename, job["listener_id"], "publish_analysis", meta
+        )
+        log.info("Analyzed %s (payload stored in DB) and found %d detections", filename, len(rec.detections))
+    
     except Exception as exc:
-       utils.set_job_status_by_filename_type(path.name, "analyze", "error", {"error": str(exc)})
-       log.exception("Failed to analyze %s", path.name)
+        utils.set_job_status_by_filename_type(
+            filename, "analyze", "error", {"err": str(exc)}
+        )
+        log.exception("Worker %s failed on %s", WORKER_ID, filename)
 
-
-
-def manual_pass():
-    log.info("Running manual pass for analyzer")
-    path = config.RECORDINGS_DIR
-    
-    # make sure all recordings are registered in DB
-    for wav in path.glob("*.wav"):
-        if not utils.job_exists(wav.name, "analyze"):
-            utils.create_job(wav.name, "analyze", {"local_path": str(wav)})
-            analyze_queue.put(wav)
-    
-    log.info("Analyzer manual pass complete")
 
 def main():
-    manual_pass()
+    log.info("Analyzer worker %s ready", WORKER_ID)
 
-    observer = Observer()
-    observer.schedule(Handler(), str(config.RECORDINGS_DIR), recursive=False)
-    observer.start()
-    log.info("Analyzer Watchdog %s", str(config.RECORDINGS_DIR))
-
-
-    try:
-        while True:
-            path = analyze_queue.get()
-            analyze(path)
-            analyze_queue.task_done
-    finally:
-        observer.stop()
-        observer.join()
+    while True:
+        log.debug("Analyzer worker %s polling for pending jobs...", WORKER_ID)
+        job = utils.pop_pending_job("analyze")
+        if not job:
+            time.sleep(2.0)
+            continue
+        analyze_job(job)
 
 if __name__ == "__main__":
     main()

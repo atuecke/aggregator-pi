@@ -193,6 +193,35 @@ def get_pending_jobs(job_type: str) -> List[Dict[str, Any]]:
         _log_sql(f"get_pending_jobs for {job_type}", start)
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     
+
+def pop_pending_job(job_type: str) -> dict | None:
+    """Atomically fetch *one* pending job and mark it running."""
+    start = time.perf_counter()
+    with get_conn() as conn:
+        # BEGIN … COMMIT surrounds both statements implicitly
+        row = conn.execute(
+            "SELECT id, filename, listener_id, payload "
+            "FROM jobs WHERE type=? AND status='pending' "
+            "ORDER BY id LIMIT 1",
+            (job_type,)
+        ).fetchone()
+        if not row:
+            _log_sql(f"pop_pending_job for {job_type}", start)
+            return None           # queue empty
+
+        job_id, filename, listener_id, payload = row
+        conn.execute(
+            "UPDATE jobs SET status='running', updated_at=? WHERE id=?",
+            (_now(), job_id),
+        )
+        conn.commit()
+        _log_sql(f"pop_pending_job for {job_type}", start)
+        return dict(
+            id=job_id,
+            filename=filename,
+            listener_id=listener_id,
+            payload=json.loads(payload or "{}"),
+        )
         
 
 # ---------------------------------------------------------------------------
