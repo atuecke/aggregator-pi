@@ -30,6 +30,10 @@ loggers:
     level: WARNING
     handlers: [file]
     propagate: false
+  numba:
+    level: WARNING
+    handlers: [file]
+    propagate: false
 
 root:
   level: DEBUG

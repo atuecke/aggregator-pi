@@ -7,6 +7,10 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from . import config, utils
+from birdnetlib import Recording
+from birdnetlib.analyzer import Analyzer
+import time
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -20,6 +24,10 @@ log = logging.getLogger("app.analyzer")
 # FIFO queue for paths to analyze
 analyze_queue: queue.Queue[Path] = queue.Queue()
 
+# ---------------------------------------------------------------------------
+# Initialize BirdNET Analyzer once (loads model)
+# ---------------------------------------------------------------------------
+analyzer = Analyzer()
 
 # event callback for when a new recording is found
 class Handler(FileSystemEventHandler):
@@ -35,7 +43,7 @@ class Handler(FileSystemEventHandler):
 
 
 def analyze(path: Path):
-    log.debug("Attempting to analyze recording %s", path.name)
+    log.debug("Starting analysis for %s", path.name)
     utils.set_job_status_by_filename_type(path.name, "analyze", "running")
 
     try:
@@ -45,21 +53,37 @@ def analyze(path: Path):
         recorded_timestamp = recorded_dt.isoformat() + "Z"
         analyzed_timestamp = dt.datetime.utcnow().isoformat() + "Z"
 
+        log.debug("Running BirdNET inference %s", path.name)
+        start = time.perf_counter()
+        recording = Recording(
+            analyzer,
+            str(path),
+            lat=0.0, lon=0.0,
+            date=dt.datetime.utcnow(),
+            min_conf=0.25,
+        )
+        recording.analyze()
+        detections = recording.detections  # list of {'species':..., 'confidence':..., 'start_time':..., 'end_time':...}
+
         # extract metadata
         with wave.open(str(path)) as wf:
             duration = wf.getnframes() / wf.getframerate()
         
+        log.debug("BirdNET took %dms to analyze %d seconds: %s", (time.perf_counter() - start) * 1000, duration, path.name)
+
         meta = {
             "filename": path.name,
             "recorded_timestamp": recorded_timestamp,
             "analyzed_timestamp": analyzed_timestamp,
             "duration_sec": duration,
-            "listener_id": utils.get_listener_id_from_name(path.name)
+            "listener_id": utils.get_listener_id_from_name(path.name),
+            "detections": detections,
         }
+
         utils.set_job_status_by_filename_type(path.name, "analyze", "done", meta)
         utils.create_job(path.name, utils.get_listener_id_from_name(path.name), "publish_analysis", meta)
         
-        log.info("Analyzed %s (payload stored in DB)", path.name)
+        log.info("Analyzed %s (payload stored in DB) and found %d detections", path.name, len(detections))
 
     except Exception as exc:
        utils.set_job_status_by_filename_type(path.name, "analyze", "error", {"error": str(exc)})

@@ -82,7 +82,7 @@ def publish_upload_jobs():
                  .field("remote", data.get("remote"))
                  .field("uploaded_at", data.get("uploaded_at"))
                  .field("data", json.dumps(data))
-                 .time(data.get("uploaded_at")))
+                 .time(dt.datetime.utcnow().isoformat() + "Z"))
         client.write(point)
 
         meta = {

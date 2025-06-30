@@ -3,7 +3,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends supervisor rclone build-essential && \
+    apt-get install -y --no-install-recommends supervisor rclone build-essential ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Make sure the log directory supervisor will write to exists **before** PID 1 starts
@@ -13,8 +13,8 @@ RUN mkdir -p /data/logs
 RUN pip install --no-cache-dir \ 
                 fastapi \ 
                 "uvicorn[standard]" \ 
-                watchdog influxdb3-python psutil PyYAML python-multipart
-
+                watchdog influxdb3-python psutil PyYAML python-multipart \ 
+                tflite-runtime librosa pydub "numpy<2.0" resampy birdnetlib 
 
 # Copy files
 WORKDIR /app
