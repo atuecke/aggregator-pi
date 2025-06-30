@@ -55,7 +55,7 @@ def upload(path: Path):
             "listener_id": utils.get_listener_id_from_name(path.name)
         }
         utils.set_job_status_by_filename_type(path.name, "upload", "done", pointer)
-        utils.create_job(path.name, "publish_upload", pointer)
+        utils.create_job(path.name, utils.get_listener_id_from_name(path.name), "publish_upload", pointer)
         log.info("Uploaded %s → %s", path, remote_path)
         # path.unlink(missing_ok=True)
     else:

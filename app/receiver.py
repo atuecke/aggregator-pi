@@ -19,11 +19,18 @@ log = logging.getLogger("app.receiver")
 SAMPLE_RATE = 16_000   # 16 kHz mono
 DURATION    = 5        # seconds per snippet
 
+listeners = [
+    "listener01",
+    "listener02",
+    "listener03",
+]
+
 def generate_recording():
+    listener_name = random.choice(listeners)
     ts        = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    filename  = f"listener01_{ts}.wav"
+    filename  = f"{listener_name}_{ts}.wav"
     tmp_path  = config.RECORDINGS_TMP_DIR / filename
-    final_path = config.RECORDINGS_DIR     / filename
+    final_path = config.RECORDINGS_DIR    / filename
 
     # write white‑noise
     frames = (random.randint(-32768, 32767) for _ in range(SAMPLE_RATE * DURATION))
@@ -35,8 +42,8 @@ def generate_recording():
     log.debug("Saved new recording to temporary file %s", tmp_path)
     
     payload = {"local_path": str(final_path)}
-    utils.create_job(filename, "analyze", payload)
-    utils.create_job(filename, "upload",  payload)
+    utils.create_job(filename, listener_name, "analyze", payload)
+    utils.create_job(filename, listener_name, "upload",  payload)
 
     # move into live directory (atomic on same filesystem)
     # this prevents the analyzer from trying to read it before it is done being written

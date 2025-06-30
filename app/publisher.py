@@ -78,7 +78,7 @@ def publish_upload_jobs():
         point = (Point(config.INFLUX_UPLOADS_TABLE)
                  .tag("filename", filename)
                  .tag("aggregator_uuid", config.AGGREGATOR_UUID)
-                 .tag("listener_id", data.get("listener_id"))
+                 .tag("listener_id", job.get("listener_id"))
                  .field("remote", data.get("remote"))
                  .field("uploaded_at", data.get("uploaded_at"))
                  .field("data", json.dumps(data))

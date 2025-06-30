@@ -52,6 +52,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   filename      TEXT NOT NULL,
+  listener_id   TEXT NOT NULL,
   type          TEXT NOT NULL,         -- 'analyze', 'upload', 'publish_analysis', 'publish_upload'
   payload       JSON,                  -- any extra data
   status        TEXT NOT NULL DEFAULT 'pending',  -- 'pending' → 'running' → 'done' → 'error'
@@ -117,7 +118,7 @@ def job_exists(filename: str, job_type: str, status: str | None = None) -> bool:
         return cur.fetchone() is not None
     
 
-def create_job(filename: str, job_type: str, payload: dict[str, Any] | None = None) -> int:
+def create_job(filename: str, listener_id: str, job_type: str, payload: dict[str, Any] | None = None) -> int:
     """Insert a *pending* job if one isn't already pending/done for that step."""
     start = time.perf_counter()
     if job_exists(filename, job_type, status="pending") or job_exists(filename, job_type, status="running"):
@@ -125,10 +126,11 @@ def create_job(filename: str, job_type: str, payload: dict[str, Any] | None = No
         return -1  # caller may ignore
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs(filename, type, payload, status, created_at, updated_at)"\
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT INTO jobs(filename, listener_id, type, payload, status, created_at, updated_at)"\
+            " VALUES(?,?,?,?,?,?,?)",
             (
                 filename,
+                listener_id,
                 job_type,
                 json.dumps(payload or {}),
                 "pending",
@@ -184,7 +186,7 @@ def get_pending_jobs(job_type: str) -> List[Dict[str, Any]]:
     start = time.perf_counter()
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT id, filename, payload FROM jobs WHERE type=? AND status='pending' ORDER BY id",
+            "SELECT id, filename, listener_id, payload FROM jobs WHERE type=? AND status='pending' ORDER BY id",
             (job_type,),
         )
         cols = [c[0] for c in cur.description]

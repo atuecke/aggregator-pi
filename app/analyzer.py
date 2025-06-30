@@ -57,7 +57,7 @@ def analyze(path: Path):
             "listener_id": utils.get_listener_id_from_name(path.name)
         }
         utils.set_job_status_by_filename_type(path.name, "analyze", "done", meta)
-        utils.create_job(path.name, "publish_analysis", meta)
+        utils.create_job(path.name, utils.get_listener_id_from_name(path.name), "publish_analysis", meta)
         
         log.info("Analyzed %s (payload stored in DB)", path.name)
 

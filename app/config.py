@@ -13,7 +13,7 @@ RECORDINGS_TMP_DIR  = BASE_DIR / "recordings_tmp"  # receiver writes here first
 ANALYSIS_DIR        = BASE_DIR / "analysis"   # analyzer output
 UPLOADS_DIR         = BASE_DIR / "uploads"   # uploader output
 LOGS_DIR            = BASE_DIR / "logs"
-LOG_PATH            = BASE_DIR / "metrics.log"
+METRICS_LOG_PATH    = LOGS_DIR / "metrics.log"
 DB_PATH             = BASE_DIR / "jobs.sqlite3"
 
 
