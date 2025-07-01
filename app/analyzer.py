@@ -86,7 +86,7 @@ def main():
     log.info("Analyzer worker %s ready", WORKER_ID)
 
     while True:
-        log.debug("Analyzer worker %s polling for pending jobs...", WORKER_ID)
+        # log.debug("Analyzer worker %s polling for pending jobs...", WORKER_ID)
         job = utils.pop_pending_job("analyze")
         if not job:
             time.sleep(2.0)

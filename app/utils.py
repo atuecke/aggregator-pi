@@ -206,7 +206,7 @@ def pop_pending_job(job_type: str) -> dict | None:
             (job_type,)
         ).fetchone()
         if not row:
-            _log_sql(f"pop_pending_job for {job_type}", start)
+            # _log_sql(f"pop_pending_job for {job_type}", start)
             return None           # queue empty
 
         job_id, filename, listener_id, payload = row
@@ -222,6 +222,25 @@ def pop_pending_job(job_type: str) -> dict | None:
             listener_id=listener_id,
             payload=json.loads(payload or "{}"),
         )
+    
+def get_eligible_filenames_for_deletion(required_types: Tuple[str]) -> list[str]:
+    """Return filenames that have *done* rows for every required_types and
+    have no 'delete' job yet."""
+    start = time.perf_counter()
+    placeholders = ",".join("?" * len(required_types))
+    sql = f"""
+    SELECT filename
+      FROM jobs
+     WHERE type IN ({placeholders})
+       AND status='done'
+    GROUP BY filename
+    HAVING COUNT(DISTINCT type)=?
+       AND SUM(CASE WHEN type='delete' THEN 1 ELSE 0 END)=0
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql, (*required_types, len(required_types)))
+        _log_sql(f"get_eligible_filenames_for_deletion", start)
+        return [row[0] for row in cur.fetchall()]
         
 
 # ---------------------------------------------------------------------------

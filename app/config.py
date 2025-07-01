@@ -5,6 +5,7 @@ from pathlib import Path
 AGGREGATOR_UUID = os.getenv("AGGREGATOR_UUID")
 METRICS_INTERVAL_SEC = os.getenv("METRICS_INTERVAL_SEC", 30)
 PUBLISH_INTERVAL_SEC = os.getenv("PUBLISH_INTERVAL_SEC", 10)
+CLEANUP_INTERVAL_SEC = os.getenv("CLEANUP_INTERVAL_SEC", 300)
 GENERATE_MOCK_AUDIO = os.getenv("GENERATE_MOCK_AUDIO", "false")
 
 # --- I/O directories ---------------------------------------------------------
