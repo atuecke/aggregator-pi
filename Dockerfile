@@ -30,8 +30,8 @@ RUN mkdir -p /data/logs
 RUN pip install --no-cache-dir \ 
                 fastapi \ 
                 "uvicorn[standard]" \ 
-                watchdog influxdb3-python psutil PyYAML python-multipart \ 
-                tflite-runtime librosa pydub "numpy<2.0" resampy birdnetlib 
+                watchdog influxdb3-python prometheus_client psutil PyYAML python-multipart \ 
+                tflite-runtime librosa pydub "numpy<2.0" resampy birdnetlib
 
 # Copy files
 WORKDIR                          /app
