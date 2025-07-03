@@ -5,14 +5,14 @@ watchers never see a half-written file."""
 
 import time, datetime as dt, random, wave, os, shutil
 from pathlib import Path
-from . import config, utils
+from . import config, utils, redis_utils
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
 import logging
-log = logging.getLogger("app.receiver")
+log = logging.getLogger("app.mock_receiver")
 # ---------------------------------------------------------------------------
 
 
@@ -41,9 +41,13 @@ def generate_recording():
         wf.writeframes(b"".join(int(i).to_bytes(2, "little", signed=True) for i in frames))
     log.debug("Saved new recording to temporary file %s", tmp_path)
     
-    payload = {"local_path": str(final_path)}
-    utils.create_job(filename, listener_name, "analyze", payload)
-    utils.create_job(filename, listener_name, "upload",  payload)
+    payload = {
+        "filename": filename,
+        "listener_id": listener_name,
+        "local_path": str(final_path)
+    }
+    redis_utils.enqueue_job("stream:analyze", payload)
+    redis_utils.enqueue_job("stream:upload",  payload)
 
     # move into live directory (atomic on same filesystem)
     # this prevents the analyzer from trying to read it before it is done being written

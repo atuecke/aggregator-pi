@@ -1,59 +1,59 @@
-import os, time, logging, json
+"""Cleanup worker: when a recording has both analysis & upload done, delete the raw WAV."""
+
+import os, time, logging, datetime as dt
 from pathlib import Path
-from . import utils, config
+
+import redis
+from . import config, utils, redis_utils
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-utils.setup_logging()  # Initialise global logging once per process
-import logging
+utils.setup_logging()
 log = logging.getLogger("app.cleanup")
 # ---------------------------------------------------------------------------
 
-SLEEP_SEC = int(os.getenv("CLEANUP_INTERVAL_SEC", "300"))  # 5 min default
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-REQUIRED_TYPES = (
-    "analyze",
-    "upload",
-    "publish_analysis",
-    "publish_upload",
-)
+# Streams & groups
+DONE_STREAM = "stream:done"
+DONE_GROUP  = "cleanup-group"
+CONSUMER        = "cleanup-1" 
+BLOCK_MS        = 5000  # block up to 5s waiting for events
 
-def _delete_file(filename: str) -> bool:
-    path: Path = config.RECORDINGS_DIR / filename
-    if not path.exists():
-        log.debug("File already absent: %s", path)
-        return False
+# Redis hash prefix for tracking per-filename state
+HASH_PREFIX = "cleanup:status:"
+
+
+def _init_group():
     try:
-        path.unlink()
-        log.info("Deleted raw recording %s", path)
-        return True
-    except Exception as exc:
-        log.error("Failed to delete %s: %s", path, exc)
-        return False
-
-def cleanup_pass() -> None:
-    log.info("Running cleanup pass")
-    eligable_filenames = utils.get_eligible_filenames_for_deletion(REQUIRED_TYPES)
-    for filename in eligable_filenames:
-        deleted = _delete_file(filename)
-        payload = {
-            "deleted_at": utils._now(),
-            "deleted": deleted,
-        }
-        listener_id = utils.get_listener_id_from_name(filename)
-        # create a delete job → immediately mark done
-        utils.create_job(filename, listener_id, "delete", payload)
-        utils.set_job_status_by_filename_type(filename, "delete", "done", payload)
+        r.xgroup_create(DONE_STREAM, DONE_GROUP, id="0-0", mkstream=True)
+    except redis.exceptions.ResponseError:
+        pass
 
 def main():
-    log.info("Cleanup worker started (interval %ss)", SLEEP_SEC)
+    _init_group()
     while True:
-        try:
-            cleanup_pass()
-        except Exception:
-            log.exception("Cleanup pass failed")
-        time.sleep(SLEEP_SEC)
+        item = redis_utils.claim_job(DONE_STREAM, DONE_GROUP, CONSUMER, block_ms=5000)
+        if not item:
+            continue
+        msg_id, job = item
+        filename = job["filename"]
+        stage    = job["stage"]          # "analyzed" or "uploaded"
+        hkey     = HASH_PREFIX + filename
+        r.hset(hkey, stage, 1)           # mark stage reached
+        flags    = r.hgetall(hkey)
+
+        if flags.get("analyzed") and flags.get("uploaded"):
+            try:
+                (Path(config.RECORDINGS_DIR) / filename).unlink(missing_ok=True)
+                log.info("Deleted %s", filename)
+            except Exception as exc:
+                log.error("Delete failed for %s: %s", filename, exc)
+            r.delete(hkey)               # cleanup hash
+
+        redis_utils.ack_job(DONE_STREAM, DONE_GROUP, msg_id)   # XACK+XDEL
 
 if __name__ == "__main__":
     main()

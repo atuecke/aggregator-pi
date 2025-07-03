@@ -20,12 +20,8 @@ handlers:
     backupCount: 7
     level: DEBUG
   
-# Suppress overly verbose logs from watchdog and python_multipart
+# Suppress overly verbose logs
 loggers:
-  watchdog:
-    level: WARNING
-    handlers: [file]
-    propagate: false
   python_multipart:
     level: WARNING
     handlers: [file]

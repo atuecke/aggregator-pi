@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from pathlib import Path
 import shutil, datetime as dt
 
-from . import config, utils
+from . import config, utils, redis_utils
 
 
 # ---------------------------------------------------------------------------
@@ -43,11 +43,15 @@ async def upload_audio(
         shutil.copyfileobj(file.file, out)
     log.debug("Saved new recording to temporary file %s", tmp_path)
 
-    payload = {"local_path": str(final_path)}
-    utils.create_job(filename, listener_id, "analyze", payload)
-    utils.create_job(filename, listener_id, "upload", payload)
-
     tmp_path.rename(final_path)
+    payload = {
+        "filename": filename,
+        "listener_id": listener_id,
+        "local_path": str(final_path)
+    }
+    redis_utils.enqueue_job("stream:analyze", payload)
+    redis_utils.enqueue_job("stream:upload",  payload)
+
     log.info("New recording %s", final_path)
 
     return {"status": "ok", "filename": filename}

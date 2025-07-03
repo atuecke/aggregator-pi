@@ -1,105 +1,144 @@
-"""Push analyzer & uploader JSON docs into InfluxDB 3.
-Handler runs uploads/publish sequentially; blocking inside `on_created`."""
+"""Pull analysis & upload payloads from Redis Streams and write to InfluxDB."""
 
-import json
+import os
 import time
-import queue
-from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-from influxdb_client_3 import InfluxDBClient3, Point
-from . import config, utils
+import threading
+import json
 import datetime as dt
+import logging
+
+from influxdb_client_3 import InfluxDBClient3, Point, WriteOptions, write_client_options
+from . import config, utils, redis_utils
 
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-utils.setup_logging()  # Initialise global logging once per process
-import logging
+utils.setup_logging()
 log = logging.getLogger("app.publisher")
 # ---------------------------------------------------------------------------
 
+# 1. Define batch/write parameters
+wo = WriteOptions(
+    batch_size=50,          # send once 50 points are queued
+    flush_interval=4_000,   # or every 4 s, whichever comes first
+    jitter_interval=1_000,  # add up to 1 s random jitter to avoid thundering herd
+    retry_interval=2_000,   # wait 2 s before retrying a failed batch
+    max_retries=3,          # retry up to 3× before giving up
+)
 
-# connect to InfluxDB3
+# Wrap it (and any callbacks) into a dict
+wco = write_client_options(write_options=wo)
+
+# 3. Instantiate the InfluxDB client with batching enabled
 client = InfluxDBClient3(
     host=config.INFLUX_URL,
     token=config.INFLUX_TOKEN,
     org=config.INFLUX_ORG,
     database=config.INFLUX_RECORDINGS_BUCKET,
+    write_client_options=wco,      # ← here’s the batching config
 )
 
-def publish_analysis_jobs():
-    log.debug("Polling for pending publish analysis jobs...")
-    for job in utils.get_pending_jobs("publish_analysis"):
-        filename = job["filename"]
-        log.debug("New pending publish analysis job found for %s", filename)
-        utils.set_job_status_by_filename_type(filename, "publish_analysis", "running")
+# Redis stream & consumer-group settings
+ANALYSIS_STREAM = "stream:publish_analysis"
+UPLOAD_STREAM   = "stream:publish_upload"
+ANALYSIS_GROUP  = "pub-analysis-group"
+UPLOAD_GROUP    = "pub-upload-group"
+CONSUMER        = "publisher-1"
+BLOCK_MS        = 5000
 
-        raw = job.get("payload")
+# ensure groups exist (runs once)
+def _init_groups():
+    for stream, group in (
+        (ANALYSIS_STREAM, ANALYSIS_GROUP),
+        (UPLOAD_STREAM,   UPLOAD_GROUP),
+    ):
         try:
-            data = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            redis_utils.claim_job(stream, group, CONSUMER, block_ms=0)
         except Exception:
-            log.error("Invalid payload for analysis job %s: %s", filename, raw)
-            utils.set_job_status_by_filename_type(filename, "publish_analysis", "error")
+            # claim_job will create the group if missing, or time out immediately
+            pass
+
+
+# thread for analysis → InfluxDB
+def _analysis_publisher():
+    log.info("Analysis publisher %s listening on %s", CONSUMER, ANALYSIS_STREAM)
+    while True:
+        item = redis_utils.claim_job(ANALYSIS_STREAM, ANALYSIS_GROUP, CONSUMER, block_ms=BLOCK_MS)
+        if not item:
             continue
-        
-        point = (Point(config.INFLUX_ANALYSIS_TABLE)
-                 .tag("filename", filename)
-                 .tag("aggregator_uuid", config.AGGREGATOR_UUID)
-                 .tag("listener_id", data.get("listener_id"))
-                 .field("data", json.dumps(data))
-                 .time(data.get("analyzed_timestamp")))
-        client.write(point)
+        msg_id, job = item
+        filename = job.get("filename")
+        payload  = job
+        log.debug("Publishing analysis for %s", filename)
 
-        meta = {
-            "published_to": f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_ANALYSIS_TABLE}",
-            "published_ts": f"{dt.datetime.utcnow().isoformat()}Z"
-        }
-        log.info("Published analysis for %s to %s", filename, meta["published_to"])
-        utils.set_job_status_by_filename_type(filename, "publish_analysis", "done", meta)
-
-
-def publish_upload_jobs():
-    log.debug("Polling for pending publish upload jobs...")
-    for job in utils.get_pending_jobs("publish_upload"):
-        filename = job["filename"]
-        log.debug("New pending publish upload job found for %s", filename)
-        utils.set_job_status_by_filename_type(filename, "publish_upload", "running")
-
-        raw = job.get("payload")
         try:
-            data = raw if isinstance(raw, dict) else json.loads(raw or "{}")
-        except Exception:
-            log.error("Invalid payload for upload job %s: %s", job["id"], raw)
-            utils.set_job_status_by_filename_type(filename, "publish_upload", "error")
+            point = (
+                Point(config.INFLUX_ANALYSIS_TABLE)
+                .tag("filename", filename)
+                .tag("aggregator_uuid", config.AGGREGATOR_UUID)
+                .tag("listener_id", payload.get("listener_id"))
+                .field("data", json.dumps(payload))
+                .time(payload.get("analyzed_timestamp"))
+            )
+            client.write(point)
+            log.info("Published analysis for %s", filename)
+            redis_utils.ack_job(ANALYSIS_STREAM, ANALYSIS_GROUP, msg_id)
+
+        except Exception as exc:
+            log.error("Failed to publish analysis for %s: %s", filename, exc)
+            # dead-letter
+            dl = {**payload, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
+            redis_utils.enqueue_job(f"{ANALYSIS_STREAM}:dead", dl)
+            redis_utils.ack_job(ANALYSIS_STREAM, ANALYSIS_GROUP, msg_id)
+
+
+# thread for upload → InfluxDB
+def _upload_publisher():
+    log.info("Upload publisher %s listening on %s", CONSUMER, UPLOAD_STREAM)
+    while True:
+        item = redis_utils.claim_job(UPLOAD_STREAM, UPLOAD_GROUP, CONSUMER, block_ms=BLOCK_MS)
+        if not item:
             continue
+        msg_id, job = item
+        filename = job.get("filename")
+        payload  = job
+        log.debug("Publishing upload for %s", filename)
 
-        point = (Point(config.INFLUX_UPLOADS_TABLE)
-                 .tag("filename", filename)
-                 .tag("aggregator_uuid", config.AGGREGATOR_UUID)
-                 .tag("listener_id", job.get("listener_id"))
-                 .field("remote", data.get("remote"))
-                 .field("uploaded_at", data.get("uploaded_at"))
-                 .field("data", json.dumps(data))
-                 .time(dt.datetime.utcnow().isoformat() + "Z"))
-        client.write(point)
+        try:
+            point = (
+                Point(config.INFLUX_UPLOADS_TABLE)
+                .tag("filename", filename)
+                .tag("aggregator_uuid", config.AGGREGATOR_UUID)
+                .tag("listener_id", payload.get("listener_id"))
+                .field("remote", payload.get("remote"))
+                .field("uploaded_at", payload.get("uploaded_at"))
+                .field("data", json.dumps(payload))
+                .time(dt.datetime.utcnow().isoformat() + "Z")
+            )
+            client.write(point)
+            log.info("Published upload for %s", filename)
+            redis_utils.ack_job(UPLOAD_STREAM, UPLOAD_GROUP, msg_id)
 
-        meta = {
-            "published_to": f"{config.INFLUX_RECORDINGS_BUCKET}/{config.INFLUX_UPLOADS_TABLE}",
-            "published_ts": f"{dt.datetime.utcnow().isoformat()}Z"
-        }
-        log.info("Published upload for %s at %s", filename, meta)
-        utils.set_job_status_by_filename_type(filename, "publish_upload", "done", meta)
+        except Exception as exc:
+            log.error("Failed to publish upload for %s: %s", filename, exc)
+            dl = {**payload, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
+            redis_utils.enqueue_job(f"{UPLOAD_STREAM}:dead", dl)
+            redis_utils.ack_job(UPLOAD_STREAM, UPLOAD_GROUP, msg_id)
 
 
 def main():
-    log.info("Publisher DB poller running every %s's", config.PUBLISH_INTERVAL_SEC)
-    while True:
-        publish_analysis_jobs()
-        publish_upload_jobs()
-        time.sleep(config.PUBLISH_INTERVAL_SEC)
-
+    # give Redis streams & groups a moment to initialize
+    _init_groups()
+    # start both publisher threads
+    t1 = threading.Thread(target=_analysis_publisher, daemon=True)
+    t2 = threading.Thread(target=_upload_publisher,   daemon=True)
+    t1.start()
+    t2.start()
+    log.info("Publisher started, threads running.")
+    # keep main alive
+    t1.join()
+    t2.join()
 
 if __name__ == "__main__":
     main()

@@ -1,16 +1,10 @@
-"""Uploads recordings to Chameleon Object Store via rclone.
-Blocking handler: Watchdog waits until each upload finishes before
-dispatching the next file event. Simple, single-threaded, reliable."""
-
 import json
 import subprocess
 import datetime as dt
 import time
 import queue
 from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-from . import config, utils
+from . import config, utils, redis_utils
 
 
 # ---------------------------------------------------------------------------
@@ -21,76 +15,88 @@ import logging
 log = logging.getLogger("app.uploader")
 # ---------------------------------------------------------------------------
 
+# Redis stream / consumer group settings
+STREAM    = "stream:upload"
+GROUP     = "upload-group"
+CONSUMER  = "uploader-1"
+BLOCK_MS  = 5000  # wait up to 5 s
 
-# FIFO queue for paths to upload
-upload_queue: queue.Queue[Path] = queue.Queue()
+def upload_job_loop():
+    log.info("Uploader worker %s starting, listening on %s", CONSUMER, STREAM)
+    while True:
+        item = redis_utils.claim_job(STREAM, GROUP, CONSUMER, block_ms=BLOCK_MS)
+        if not item:
+            # timed out, loop back to keep the consumer alive
+            continue
 
-class Handler(FileSystemEventHandler):
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if(path.suffix.lower() == ".wav"):
-            log.debug("Found new recording %s, adding to the upload queue", path.name)
-            # enqeue only if not already queued
-            if path not in list(upload_queue.queue):
-                upload_queue.put(path)
+        msg_id, job = item
+        filename    = job.get("filename")
+        local_path  = job.get("local_path")
+        listener_id = job.get("listener_id")
+        path = Path(local_path)
+
+        log.debug("Attempting to upload %s (msg %s)", filename, msg_id)
+        try:
+            remote_path = (
+                f"{config.RCLONE_REMOTE_BUCKET}/"
+                f"{config.AGGREGATOR_UUID}/"
+                f"{listener_id}/{filename}"
+            )
+            result = subprocess.run(
+                ["rclone", "copyto", str(path), remote_path],
+                capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"rclone error: {result.stderr.strip()}")
+
+            # success → enqueue publish_upload
+            payload = {
+                "filename": filename,
+                "remote": remote_path,
+                "uploaded_at": dt.datetime.utcnow().isoformat() + "Z",
+                "listener_id": listener_id,
+            }
+            redis_utils.enqueue_job("stream:publish_upload", payload)
+            redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "uploaded"})
+            log.info("Uploaded %s → %s", filename, remote_path)
+
+            # ACK & remove from stream
+            redis_utils.ack_job(STREAM, GROUP, msg_id)
+
+        except Exception as exc:
+            log.error("Upload failed for %s: %s", filename, exc)
+
+            # dead-letter: record failure and remove from pending
+            dead_payload = {
+                **job,
+                "error": str(exc),
+                "failed_at": dt.datetime.utcnow().isoformat() + "Z",
+            }
+            redis_utils.enqueue_job(f"{STREAM}:dead", dead_payload)
+            redis_utils.ack_job(STREAM, GROUP, msg_id)
+
+            # short pause to avoid tight-loop on repeated errors
+            time.sleep(1)
 
 
-
-def upload(path: Path):
-    log.debug("Attempting to upload recording %s", path.name)
-    utils.set_job_status_by_filename_type(path.name, "upload", "running")
+# def manual_pass():
+#     log.info("Running manual pass for uploader")
+#     path = config.UPLOADS_DIR
     
-    remote_path = f"{config.RCLONE_REMOTE_BUCKET}/{config.AGGREGATOR_UUID}/{path.name.split('_', 1)[0]}/{path.name}"
-    result = subprocess.run(
-        ["rclone", "copyto", str(path), remote_path],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        pointer = {
-            "filename": path.name,
-            "remote": remote_path,
-            "uploaded_at": dt.datetime.utcnow().isoformat() + "Z",
-            "listener_id": utils.get_listener_id_from_name(path.name)
-        }
-        utils.set_job_status_by_filename_type(path.name, "upload", "done", pointer)
-        utils.create_job(path.name, utils.get_listener_id_from_name(path.name), "publish_upload", pointer)
-        log.info("Uploaded %s → %s", path, remote_path)
-        # path.unlink(missing_ok=True)
-    else:
-        utils.set_job_status_by_filename_type(path.name, "upload", "error", {"stderr": result.stderr})
-        log.error("Upload failed for %s: %s", path, result.stderr)
-
-
-def manual_pass():
-    log.info("Running manual pass for uploader")
-    path = config.UPLOADS_DIR
+#     # make sure all recordings are registered in DB
+#     for wav in path.glob("*.wav"):
+#         if not utils.job_exists(wav.name, "upload"):
+#             utils.create_job(wav.name, "upload", {"local_path": str(wav)})
+#             upload_queue.put(wav)
     
-    # make sure all recordings are registered in DB
-    for wav in path.glob("*.wav"):
-        if not utils.job_exists(wav.name, "upload"):
-            utils.create_job(wav.name, "upload", {"local_path": str(wav)})
-            upload_queue.put(wav)
-    
-    log.info("Uploader manual pass complete")
+#     log.info("Uploader manual pass complete")
 
 
 def main():
-    manual_pass()
-    
-    observer = Observer()
-    observer.schedule(Handler(), str(config.RECORDINGS_DIR), recursive=False)
-    observer.start()
-    log.info("Uploader Watchdog %s", str(config.RECORDINGS_DIR))
-
-    try:
-        while True:
-            path = upload_queue.get()
-            upload(path)
-            upload_queue.task_done
-    finally:
-        observer.stop(); observer.join()
+    # Delay start slightly so Redis is ready under supervisord
+    time.sleep(2)
+    upload_job_loop()
 
 if __name__ == "__main__":
     main()

@@ -1,97 +1,100 @@
-"""File-system watcher ➜ extract basic WAV metadata.
-We rely on receiver's atomic move, so we can safely open the file as soon as
-we see it; no more arbitrary sleep."""
+"""Redis-based analyzer worker - pulls jobs from a Redis Stream, runs BirdNET,
+publishes results to the next stream, and ACKs or requeues on failure."""
 
-import json, wave, datetime as dt, queue, signal, sys
+import os, time, json, wave, datetime as dt, logging
 from pathlib import Path
-from watchdog.events import FileSystemEventHandler
-from . import config, utils
+
 from birdnetlib import Recording
 from birdnetlib.analyzer import Analyzer
-import time
-import os
 
+from . import config, utils
+from . import redis_utils
 
-
-WORKER_ID = int(os.getenv("WORKER_ID", "0"))   # set by Supervisor
-_analyzer = Analyzer()                         # model loads once here 
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 utils.setup_logging()  # Initialise global logging once per process
-import logging
+WORKER_ID = int(os.getenv("WORKER_ID", "0"))   # set by Supervisor
 log = logging.getLogger(f"app.analyzer_{WORKER_ID}")
 # ---------------------------------------------------------------------------
 
 
-# FIFO queue for paths to analyze
-analyze_queue: queue.Queue[Path] = queue.Queue()
+# Redis stream settings
+STREAM   = "stream:analyze"
+GROUP    = "analyze-group"
+CONSUMER = f"worker-{WORKER_ID}"
+BLOCK_MS = 5000  # 5-second blocking read
+MAX_ATTEMPTS = 2
 
 
-def analyze_job(job: dict):
-    filename = job["filename"]
-    path = Path(config.RECORDINGS_DIR / filename)
+_analyzer = Analyzer()                         # model loads once here 
 
-    log.debug("Starting analysis for %s on worker %s", filename, WORKER_ID)
-    utils.set_job_status_by_filename_type(filename, "analyze", "running")
+
+def handle_job(msg_id: str, job: dict) -> None:
+    filename    = job["filename"]
+    local_path  = job["local_path"]
+    listener_id = job["listener_id"]
+    attempts    = int(job.get("attempts", 0))
+
+    path = Path(local_path)
+    log.debug("Worker %s analyzing %s (attempt %d)", WORKER_ID, filename, attempts)
 
     try:
         with wave.open(str(path)) as wf:
             duration = wf.getnframes() / wf.getframerate()
 
-        # parse recorded timestamp from filename (format: rec_YYYYMMDDTHHMMSSZ.wav)
-        rec_str = path.stem.split("_", 1)[1]
-        recorded_dt = dt.datetime.strptime(rec_str, "%Y%m%dT%H%M%SZ")
-        recorded_timestamp = recorded_dt.isoformat() + "Z"
-        analyzed_timestamp = dt.datetime.utcnow().isoformat() + "Z"
-
-        start = time.perf_counter()
         rec = Recording(
             _analyzer,
             str(path),
-            lat=0.0,
-            lon=0.0,
+            lat=0.0, lon=0.0,
             date=dt.datetime.utcnow(),
             min_conf=0.25,
         )
+        t0 = time.perf_counter()
         rec.analyze()
-        log.debug("BirdNET on worker %s took %dms to analyze %d seconds: %s", WORKER_ID, (time.perf_counter() - start) * 1000, duration, filename)
+        elapsed = (time.perf_counter() - t0) * 1000
 
         meta = {
             "filename": filename,
-            "recorded_timestamp": recorded_timestamp,
-            "analyzed_timestamp": analyzed_timestamp,
+            "recorded_timestamp": job.get("recorded_timestamp"),
+            "analyzed_timestamp": dt.datetime.utcnow().isoformat() + "Z",
             "duration_sec": duration,
-            "listener_id": utils.get_listener_id_from_name(path.name),
+            "listener_id": listener_id,
             "detections": rec.detections,
         }
 
-        utils.set_job_status_by_filename_type(
-            filename, "analyze", "done", meta
+        redis_utils.enqueue_job("stream:publish_analysis", meta)
+        redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
+        log.info(
+            "Analyzed %s in %.0f ms, %d detections",
+            filename, elapsed, len(rec.detections)
         )
-        utils.create_job(
-            filename, job["listener_id"], "publish_analysis", meta
-        )
-        log.info("Analyzed %s (payload stored in DB) and found %d detections", filename, len(rec.detections))
-    
+        redis_utils.ack_job(STREAM, GROUP, msg_id)  # success – remove from stream
+
     except Exception as exc:
-        utils.set_job_status_by_filename_type(
-            filename, "analyze", "error", {"err": str(exc)}
-        )
-        log.exception("Worker %s failed on %s", WORKER_ID, filename)
+        log.error("Analysis failed on %s: %s", filename, exc)
+        if attempts + 1 >= MAX_ATTEMPTS:
+            # dead-letter after too many tries
+            job.update({"error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"})
+            redis_utils.enqueue_job(f"{STREAM}:dead", job)
+            redis_utils.ack_job(STREAM, GROUP, msg_id)
+        else:
+            # requeue with back-off
+            job["attempts"] = attempts + 1
+            redis_utils.enqueue_job(STREAM, job)
+            redis_utils.ack_job(STREAM, GROUP, msg_id)
+            time.sleep(1 * (attempts + 1))  # simple linear back-off
 
 
-def main():
-    log.info("Analyzer worker %s ready", WORKER_ID)
-
+def main() -> None:
+    log.info("Analyzer worker %s listening on Redis stream %s", WORKER_ID, STREAM)
     while True:
-        # log.debug("Analyzer worker %s polling for pending jobs...", WORKER_ID)
-        job = utils.pop_pending_job("analyze")
-        if not job:
-            time.sleep(2.0)
-            continue
-        analyze_job(job)
+        item = redis_utils.claim_job(STREAM, GROUP, CONSUMER, block_ms=BLOCK_MS)
+        if not item:
+            continue  # timed out – loop back
+        msg_id, job = item
+        handle_job(msg_id, job)
 
 if __name__ == "__main__":
     main()
