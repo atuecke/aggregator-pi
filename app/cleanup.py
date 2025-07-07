@@ -47,8 +47,9 @@ def main():
 
         if flags.get("analyzed") and flags.get("uploaded"):
             try:
-                (Path(config.RECORDINGS_DIR) / filename).unlink(missing_ok=True)
-                log.info("Deleted %s", filename)
+                if(config.DELETE_RECORDINGS):
+                    (Path(config.RECORDINGS_DIR) / filename).unlink(missing_ok=True)
+                    log.info("Deleted %s", filename)
             except Exception as exc:
                 log.error("Delete failed for %s: %s", filename, exc)
             r.delete(hkey)               # cleanup hash

@@ -59,7 +59,7 @@ def claim_job(
 
     resp = r.xreadgroup(group, consumer, {stream: ">"}, count=1, block=block_ms)
     if not resp:
-        _log_redis(f"claim_job {stream} (timeout)", start)
+        # _log_redis(f"claim_job {stream} (timeout)", start)
         return None
 
     _, msgs = resp[0]

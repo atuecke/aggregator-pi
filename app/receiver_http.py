@@ -49,8 +49,15 @@ async def upload_audio(
         "listener_id": listener_id,
         "local_path": str(final_path)
     }
-    redis_utils.enqueue_job("stream:analyze", payload)
-    redis_utils.enqueue_job("stream:upload",  payload)
+    if(config.ANALYZE_RECORDINGS):
+        redis_utils.enqueue_job("stream:analyze", payload)
+    if(config.UPLOAD_RAW_TO_CLOUD):
+        redis_utils.enqueue_job("stream:upload",  payload)
+    if(not config.ANALYZE_RECORDINGS and not config.UPLOAD_RAW_TO_CLOUD and config.DELETE_RECORDINGS):
+        # mark both as analyzed so that it gets deleted
+        redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "uploaded"})
+        redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
+
 
     log.info("New recording %s", final_path)
 

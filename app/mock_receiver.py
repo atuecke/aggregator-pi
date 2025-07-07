@@ -58,7 +58,7 @@ def generate_recording():
 
 def main():
         while True:
-            if config.GENERATE_MOCK_AUDIO == "true":
+            if config.GENERATE_MOCK_AUDIO:
                 generate_recording()
             time.sleep(10)
 

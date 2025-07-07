@@ -59,6 +59,9 @@ def upload_job_loop():
             }
             redis_utils.enqueue_job("stream:publish_upload", payload)
             redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "uploaded"})
+            if not config.ANALYZE_RECORDINGS:
+                # set the analysis to done aswell so that the cleanup process runs properly
+                redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
             log.info("Uploaded %s → %s", filename, remote_path)
 
             # ACK & remove from stream
@@ -99,4 +102,8 @@ def main():
     upload_job_loop()
 
 if __name__ == "__main__":
-    main()
+    if(config.UPLOAD_RAW_TO_CLOUD):
+        main()
+    else:
+        log.info("Uploading to the cloud has been disabled. Re-enable it in settings to upload the raw recordings to the cloud.")
+        time.sleep(5) # Avoid supervisord running check failing

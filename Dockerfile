@@ -43,6 +43,7 @@ COPY logging.yaml                /etc/iot/
 COPY prometheus-agent.yml.tpl    /etc/prom_agent/prometheus-agent.yml.tpl
 COPY redis.conf /etc/redis/redis.conf
 COPY entrypoint.sh               /usr/local/bin/entrypoint.sh
+COPY settings.yaml /etc/iot/settings.yaml
 
 # Expose 8000 for incoming receiver HTTP, 8001 for python metrics, 9100 for prometheus metrics, 6379 for redis
 EXPOSE 8000 8001 9100 6379

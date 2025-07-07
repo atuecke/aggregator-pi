@@ -1,0 +1,18 @@
+aggregator_uuid: "pi-dev"
+
+# General Settings
+metrics_interval_sec: 15
+generate_mock_audio: false
+analyze_recordings: true
+upload_raw_to_cloud: true
+delete_recordings: true
+
+# --- I/O directories ---------------------------------------------------------
+base_dir: "/data"
+recordings_dir: "/data/recordings"
+recordings_temp_dir: "/data/recordings_tmp"
+logs_dir: "/data/logs"
+
+
+# Listener Connection 
+recordings_endpoint: "/recording_endpoint"

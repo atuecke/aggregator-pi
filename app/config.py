@@ -1,39 +1,61 @@
-"""Centralised runtime settings - tweak via env-vars for prod."""
+"""Centralised runtime settings - mix of YAML defaults + env-var overrides."""
 import os
+import yaml
 from pathlib import Path
 
-AGGREGATOR_UUID = os.getenv("AGGREGATOR_UUID")
-METRICS_INTERVAL_SEC = os.getenv("METRICS_INTERVAL_SEC", 30)
-PUBLISH_INTERVAL_SEC = os.getenv("PUBLISH_INTERVAL_SEC", 10)
-CLEANUP_INTERVAL_SEC = os.getenv("CLEANUP_INTERVAL_SEC", 300)
-GENERATE_MOCK_AUDIO = os.getenv("GENERATE_MOCK_AUDIO", "false")
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) Load defaults from mounted YAML (if present)
+# ──────────────────────────────────────────────────────────────────────────────
+DEFAULT_CFG_PATH = os.getenv("CONFIG_PATH", "/etc/iot/settings.yaml")
+_defaults = {}
+if Path(DEFAULT_CFG_PATH).is_file():
+    with open(DEFAULT_CFG_PATH, "rt") as fh:
+        _defaults = yaml.safe_load(fh) or {}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) Helper to read an int, bool, or str:  ENV  →  YAML default  →  hardcoded
+# ──────────────────────────────────────────────────────────────────────────────
+def _env(name, cast=str, default=None):
+    val = os.getenv(name)
+    if val is not None:
+        return cast(val)
+    # look in YAML (keys in lower_snake_case)
+    snake = name.lower()
+    if snake in _defaults:
+        return cast(_defaults[snake])
+    return default
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) Settings
+# ──────────────────────────────────────────────────────────────────────────────
+AGGREGATOR_UUID         = _env("AGGREGATOR_UUID",      str,   _defaults.get("aggregator_uuid", "dev-pi"))
+METRICS_INTERVAL_SEC    = _env("METRICS_INTERVAL_SEC", int,   30)
+GENERATE_MOCK_AUDIO     = _env("GENERATE_MOCK_AUDIO",  lambda v: bool(int(v)), False)
+ANALYZE_RECORDINGS = _env("ANALYZE_RECORDINGS", lambda v: bool(int(v)), True)
+UPLOAD_RAW_TO_CLOUD = _env("UPLOAD_RAW_TO_CLOUD", lambda v: bool(int(v)), True)
+DELETE_RECORDINGS = _env("DELETE_RECORDINGS", lambda v: bool(int(v)), True)
 
 # --- I/O directories ---------------------------------------------------------
-BASE_DIR = Path(os.getenv("BASE_DIR", "/data"))
-RECORDINGS_DIR      = BASE_DIR / "recordings"
-RECORDINGS_TMP_DIR  = BASE_DIR / "recordings_tmp"  # receiver writes here first
-ANALYSIS_DIR        = BASE_DIR / "analysis"   # analyzer output
-UPLOADS_DIR         = BASE_DIR / "uploads"   # uploader output
-LOGS_DIR            = BASE_DIR / "logs"
-METRICS_LOG_PATH    = LOGS_DIR / "metrics.log"
-DB_PATH             = BASE_DIR / "jobs.sqlite3"
-
+BASE_DIR          = Path(_env("BASE_DIR", str, "/data"))
+RECORDINGS_DIR    = Path(_env("RECORDINGS_DIR", str, BASE_DIR / "recordings"))
+RECORDINGS_TMP_DIR= Path(_env("RECORDINGS_TMP_DIR", str, BASE_DIR / "recordings_tmp"))
+LOGS_DIR          = Path(_env("LOGS_DIR", str, BASE_DIR / "logs"))
 
 # --- InfluxDB 3 connection ---------------------------------------------------
-INFLUX_URL    = os.getenv("INFLUX_URL",   "http://influxdb:8181")
-INFLUX_TOKEN  = os.getenv("INFLUX_TOKEN")
-INFLUX_ORG    = os.getenv("INFLUX_ORG")
-INFLUX_RECORDINGS_BUCKET = os.getenv("INFLUX_RECORDINGS_BUCKET")
-INFLUX_METRICS_BUCKET = os.getenv("INFLUX_METRICS_BUCKET")
-INFLUX_ANALYSIS_TABLE = os.getenv("INFLUX_ANALYSIS_TABLE", "analysis")
-INFLUX_UPLOADS_TABLE = os.getenv("INFLUX_UPLOADS_TABLE", "uploads")
-
+INFLUX_URL               = _env("INFLUX_URL",   str, None)
+INFLUX_TOKEN             = _env("INFLUX_TOKEN", str, None)
+INFLUX_ORG               = _env("INFLUX_ORG",   str, None)
+INFLUX_RECORDINGS_BUCKET = _env("INFLUX_RECORDINGS_BUCKET", str, None)
+INFLUX_METRICS_BUCKET    = _env("INFLUX_METRICS_BUCKET", str, None)
+INFLUX_ANALYSIS_TABLE    = _env("INFLUX_ANALYSIS_TABLE",    str, "analysis")
+INFLUX_UPLOADS_TABLE     = _env("INFLUX_UPLOADS_TABLE",     str, "uploads")
 
 # --- Listener Connection ----------------------------------------------------
-RECORDINGS_ENDPOINT = os.getenv("RECORDINGS_ENDPOINT", "/recording_endpoint")
+RECORDINGS_ENDPOINT      = _env("RECORDINGS_ENDPOINT", str, "/recording_endpoint")
 
 # --- Object store -----------------------------------------------------------
-RCLONE_REMOTE_BUCKET = os.getenv("RCLONE_REMOTE_BUCKET", "s3:my-bucket/data")
+RCLONE_REMOTE_BUCKET     = _env("RCLONE_REMOTE_BUCKET", str, "s3:my-bucket/data")
 
-for p in (RECORDINGS_DIR, RECORDINGS_TMP_DIR, ANALYSIS_DIR, UPLOADS_DIR, LOGS_DIR):
+# ensure directories exist
+for p in (RECORDINGS_DIR, RECORDINGS_TMP_DIR, LOGS_DIR):
     p.mkdir(parents=True, exist_ok=True)

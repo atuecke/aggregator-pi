@@ -28,7 +28,7 @@ BLOCK_MS = 5000  # 5-second blocking read
 MAX_ATTEMPTS = 2
 
 
-_analyzer = Analyzer()                         # model loads once here 
+_analyzer = Analyzer() # model loads once here 
 
 
 def handle_job(msg_id: str, job: dict) -> None:
@@ -54,6 +54,8 @@ def handle_job(msg_id: str, job: dict) -> None:
         t0 = time.perf_counter()
         rec.analyze()
         elapsed = (time.perf_counter() - t0) * 1000
+        efficiency=elapsed/(duration*1000)
+        log.debug("BirdNET on worker %s took %.0f ms to analyze %d seconds (%.2f efficiency): %s", WORKER_ID, elapsed, duration, efficiency, filename)
 
         meta = {
             "filename": filename,
@@ -66,11 +68,14 @@ def handle_job(msg_id: str, job: dict) -> None:
 
         redis_utils.enqueue_job("stream:publish_analysis", meta)
         redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
+        if not config.UPLOAD_RAW_TO_CLOUD:
+                # set the upload to done aswell so that the cleanup process runs properly
+                redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "uploaded"})
+        redis_utils.ack_job(STREAM, GROUP, msg_id)  # success – remove from stream
         log.info(
             "Analyzed %s in %.0f ms, %d detections",
             filename, elapsed, len(rec.detections)
         )
-        redis_utils.ack_job(STREAM, GROUP, msg_id)  # success – remove from stream
 
     except Exception as exc:
         log.error("Analysis failed on %s: %s", filename, exc)
@@ -97,4 +102,8 @@ def main() -> None:
         handle_job(msg_id, job)
 
 if __name__ == "__main__":
-    main()
+    if(config.ANALYZE_RECORDINGS):
+        main()
+    else:
+        log.info("Analyzing recordings has been disabled. Re-enable it in settings to start analyzing recordings with birdnet")
+        time.sleep(5) # Avoid supervisord running check failing
