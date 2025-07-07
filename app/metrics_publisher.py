@@ -69,6 +69,12 @@ supervisor_state_gauge = Gauge(
     ["program"]
 )
 
+exit_code = Gauge(
+    "supervisor_process_exitcode",
+    "Last exit code of supervised process",
+    ["program"]
+)
+
 
 def update_metrics():
     """Fetch current queue lengths & Supervisord states and update all Gauges."""
@@ -91,6 +97,8 @@ def update_metrics():
             state = p["statename"]
             code  = STATE_MAP.get(state, STATE_MAP["UNKNOWN"])
             supervisor_state_gauge.labels(program=name).set(code)
+            if p['statename'] != 'RUNNING':
+                exit_code.labels(program=name).set(p['exitstatus'])
     except Exception as exc:
         log.error("Failed to update Supervisor metrics: %s", exc)
 
