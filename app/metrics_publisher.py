@@ -1,11 +1,11 @@
 import os
 import time
 import logging
+from xmlrpc import client as xmlrpclib
 
 from prometheus_client import start_http_server, Gauge
 from . import config, utils
 import redis
-
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -24,6 +24,23 @@ ANALYZE_STREAM         = "stream:analyze"
 UPLOAD_STREAM          = "stream:upload"
 PUBLISH_ANALYSIS_STREAM= "stream:publish_analysis"
 PUBLISH_UPLOAD_STREAM  = "stream:publish_upload"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Supervisord XML-RPC settings
+# ──────────────────────────────────────────────────────────────────────────────
+# Make sure you have [inet_http_server] enabled on 127.0.0.1:9001 in supervisord.conf
+RPC_CLIENT = xmlrpclib.ServerProxy("http://127.0.0.1:9001/RPC2")
+
+# Map supervisord statename → numeric code
+STATE_MAP = {
+    "RUNNING":  1,
+    "STARTING": 2,
+    "BACKOFF":  3,
+    "STOPPED":  4,
+    "EXITED":   5,
+    "FATAL":    6,
+    "UNKNOWN":  7,
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -46,9 +63,17 @@ publish_upload_queue_gauge = Gauge(
     "Number of pending 'publish_upload' jobs in the aggregator"
 )
 
+supervisor_state_gauge = Gauge(
+    "supervisor_process_state",
+    "State of supervised process (1=RUNNING,2=STARTING,3=BACKOFF,4=STOPPED,5=EXITED,6=FATAL,7=UNKNOWN)",
+    ["program"]
+)
+
 
 def update_metrics():
-    """Fetch current queue lengths from Redis and update Prometheus Gauges."""
+    """Fetch current queue lengths & Supervisord states and update all Gauges."""
+
+    # --- Redis queue lengths
     try:
         analyze_queue_gauge.set(r.xlen(ANALYZE_STREAM))
         upload_queue_gauge.set(r.xlen(UPLOAD_STREAM))
@@ -57,6 +82,18 @@ def update_metrics():
     except Exception as exc:
         log.error("Failed to update queue-length metrics: %s", exc)
 
+    
+    # --- Supervisord process states
+    try:
+        procs = RPC_CLIENT.supervisor.getAllProcessInfo()
+        for p in procs:
+            name  = p["name"]
+            state = p["statename"]
+            code  = STATE_MAP.get(state, STATE_MAP["UNKNOWN"])
+            supervisor_state_gauge.labels(program=name).set(code)
+    except Exception as exc:
+        log.error("Failed to update Supervisor metrics: %s", exc)
+
 
 def main():
     # Start the HTTP server to expose metrics.
@@ -64,10 +101,11 @@ def main():
     start_http_server(8001)
     log.info("Metrics server listening on port 8001")
 
-    # Loop forever, updating metrics at the given interval
+    # Periodic scrape loop
+    interval = int(config.METRICS_INTERVAL_SEC)
     while True:
         update_metrics()
-        time.sleep(int(config.METRICS_INTERVAL_SEC))
+        time.sleep(interval)
 
 
 if __name__ == "__main__":

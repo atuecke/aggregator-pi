@@ -14,6 +14,12 @@ scrape_configs:
         labels:
           aggregator_uuid: ${AGGREGATOR_UUID}
 
+  - job_name: 'aggregator_supervisor'
+    static_configs:
+      - targets: ['localhost:9105']
+        labels:
+            aggregator_uuid: ${AGGREGATOR_UUID}
+
 remote_write:
   - url: "http://${KVM_IP}:9090/api/v1/write"
     basic_auth:
