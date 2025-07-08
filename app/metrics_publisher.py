@@ -3,7 +3,7 @@ import time
 import logging
 from xmlrpc import client as xmlrpclib
 
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import start_http_server, Gauge, Counter
 from . import config, utils
 import redis
 
@@ -75,6 +75,34 @@ exit_code = Gauge(
     ["program"]
 )
 
+# ────────────────────────────────────────────────────────────────────────
+# Define Prometheus counters for processed jobs
+# ────────────────────────────────────────────────────────────────────────
+processed_analyze = Counter(
+    "analyze_jobs_processed_total",
+    "Total number of 'analyze' jobs fully processed"
+)
+processed_upload = Counter(
+    "upload_jobs_processed_total",
+    "Total number of 'upload' jobs fully processed"
+)
+processed_pub_analysis = Counter(
+    "publish_analysis_jobs_processed_total",
+    "Total number of 'publish_analysis' jobs fully processed"
+)
+processed_pub_upload = Counter(
+    "publish_upload_jobs_processed_total",
+    "Total number of 'publish_upload' jobs fully processed"
+)
+
+# Keep track of the last seen Redis counters
+_last = {
+    "analyze": 0,
+    "upload": 0,
+    "publish_analysis": 0,
+    "publish_upload": 0,
+}
+
 
 def update_metrics():
     """Fetch current queue lengths & Supervisord states and update all Gauges."""
@@ -87,6 +115,23 @@ def update_metrics():
         publish_upload_queue_gauge.set(r.xlen(PUBLISH_UPLOAD_STREAM))
     except Exception as exc:
         log.error("Failed to update queue-length metrics: %s", exc)
+
+    # fetch running totals from Redis
+    try:
+        for job_type, prom_counter in [
+            ("analyze", processed_analyze),
+            ("upload", processed_upload),
+            ("publish_analysis", processed_pub_analysis),
+            ("publish_upload", processed_pub_upload),
+        ]:
+            key = f"counter:processed:{job_type}"
+            current = int(r.get(key) or 0)
+            delta   = current - _last[job_type]
+            if delta > 0:
+                prom_counter.inc(delta)
+                _last[job_type] = current
+    except Exception as exc:
+        log.error("Failed to update processed-jobs counters: %s", exc)
 
     
     # --- Supervisord process states

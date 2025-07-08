@@ -75,6 +75,11 @@ def ack_job(stream: str, group: str, msg_id: str) -> None:
     r.xdel(stream, msg_id)
     _log_redis(f"ack_job {stream}", start)
 
+    # track a running total in Redis
+    # e.g. stream = "stream:analyze" → counter key "counter:processed:analyze"
+    job_type = stream.split(":", 1)[1]
+    r.incr(f"counter:processed:{job_type}")
+
 def ensure_group(stream: str, group: str):
     """Create <group> on <stream> if missing; never read a message."""
     try:
