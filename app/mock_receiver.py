@@ -63,4 +63,8 @@ def main():
             time.sleep(10)
 
 if __name__ == "__main__":
-    main()
+    if(config.GENERATE_MOCK_AUDIO):
+        main()
+    else:
+        log.info("Generating mock audio has been disabled. Re-enable it in settings to generate mock white noise audio files")
+        time.sleep(5) # Avoid supervisord running check failing

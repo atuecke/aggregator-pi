@@ -49,15 +49,8 @@ BLOCK_MS        = 5000
 
 # ensure groups exist (runs once)
 def _init_groups():
-    for stream, group in (
-        (ANALYSIS_STREAM, ANALYSIS_GROUP),
-        (UPLOAD_STREAM,   UPLOAD_GROUP),
-    ):
-        try:
-            redis_utils.claim_job(stream, group, CONSUMER, block_ms=0)
-        except Exception:
-            # claim_job will create the group if missing, or time out immediately
-            pass
+    redis_utils.ensure_group(ANALYSIS_STREAM, ANALYSIS_GROUP)
+    redis_utils.ensure_group(UPLOAD_STREAM,   UPLOAD_GROUP)
 
 
 # thread for analysis → InfluxDB

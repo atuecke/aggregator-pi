@@ -74,3 +74,10 @@ def ack_job(stream: str, group: str, msg_id: str) -> None:
     r.xack(stream, group, msg_id)
     r.xdel(stream, msg_id)
     _log_redis(f"ack_job {stream}", start)
+
+def ensure_group(stream: str, group: str):
+    """Create <group> on <stream> if missing; never read a message."""
+    try:
+        r.xgroup_create(stream, group, id="0-0", mkstream=True)
+    except redis.exceptions.ResponseError:
+        pass  # group already exists
