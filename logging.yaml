@@ -30,6 +30,10 @@ loggers:
     level: WARNING
     handlers: [file]
     propagate: false
+  influxdb_client_3:
+    level: WARNING
+    handlers: [file]
+    propagate: false
 
 root:
   level: DEBUG

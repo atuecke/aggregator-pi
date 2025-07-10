@@ -26,6 +26,7 @@ RUN apt-get update && \
 
 # Make sure the log directory supervisor will write to exists **before** PID 1 starts
 RUN mkdir -p /data/logs
+VOLUME /data
 
 # Install Python requirements
 RUN pip install --no-cache-dir \ 

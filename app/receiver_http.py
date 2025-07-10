@@ -36,19 +36,18 @@ async def upload_audio(
     listener_id = listener_id or utils.get_listener_id_from_name(base_name)
     filename = f"{listener_id}_{ts}{Path(base_name).suffix}"
 
-    tmp_path = config.RECORDINGS_TMP_DIR / filename
-    final_path = config.RECORDINGS_DIR / filename
+    recording_path = config.RECORDINGS_DIR / filename
 
-    with tmp_path.open("wb") as out:
+    with recording_path.open("wb") as out:
         shutil.copyfileobj(file.file, out)
-    log.debug("Saved new recording to temporary file %s", tmp_path)
+    log.debug("Saved new recording to final path %s", recording_path)
 
-    tmp_path.rename(final_path)
     payload = {
         "filename": filename,
         "listener_id": listener_id,
-        "local_path": str(final_path)
+        "local_path": str(recording_path)
     }
+    
     if(config.ANALYZE_RECORDINGS):
         redis_utils.enqueue_job("stream:analyze", payload)
     if(config.UPLOAD_RAW_TO_CLOUD):
@@ -59,7 +58,7 @@ async def upload_audio(
         redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
 
 
-    log.info("New recording %s", final_path)
+    log.info("New recording %s", recording_path)
 
     return {"status": "ok", "filename": filename}
 

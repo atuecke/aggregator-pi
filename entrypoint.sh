@@ -1,4 +1,8 @@
 #!/bin/sh
+
+# create any subfolders under /data
+mkdir -p /data/logs
+
 # Render the real prometheus-agent.yml
 envsubst '$PROM_SCRAPE_INTERVAL $KVM_IP $PROM_USER $PROM_PASS $AGGREGATOR_UUID' \
   < /etc/prom_agent/prometheus-agent.yml.tpl \

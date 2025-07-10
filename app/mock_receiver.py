@@ -29,17 +29,16 @@ def generate_recording():
     listener_name = random.choice(listeners)
     ts        = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename  = f"{listener_name}_{ts}.wav"
-    tmp_path  = config.RECORDINGS_TMP_DIR / filename
     final_path = config.RECORDINGS_DIR    / filename
 
     # write white‑noise
     frames = (random.randint(-32768, 32767) for _ in range(SAMPLE_RATE * DURATION))
-    with wave.open(str(tmp_path), "wb") as wf:
+    with wave.open(str(final_path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(b"".join(int(i).to_bytes(2, "little", signed=True) for i in frames))
-    log.debug("Saved new recording to temporary file %s", tmp_path)
+    log.debug("Saved new recording to final path %s", final_path)
     
     payload = {
         "filename": filename,
@@ -48,10 +47,6 @@ def generate_recording():
     }
     redis_utils.enqueue_job("stream:analyze", payload)
     redis_utils.enqueue_job("stream:upload",  payload)
-
-    # move into live directory (atomic on same filesystem)
-    # this prevents the analyzer from trying to read it before it is done being written
-    shutil.move(tmp_path, final_path)
 
     log.info("New recording %s", final_path)
 
