@@ -112,9 +112,73 @@ ExecStart=/usr/bin/prometheus \
 EOF
 ```
 
-7. Give Prom
+7. Give Prometheus access & restart
+```
+chown -R prometheus:prometheus /var/lib/prometheus
+chmod 750 /var/lib/prometheus
 
+sudo systemctl daemon-reload
+sudo systemctl restart prometheus
+sudo systemctl status prometheus
+```
+It should display that the Prometheus service is Active
 
+8. Install the Prometheus node exporter and make it a service
+(This part is for scraping local metrics on the server)
+```
+sudo mkdir -p /etc/systemd/system/prometheus-node-exporter.service.d
+
+cat <<’EOF’ | sudo tee /etc/systemd/system/prometheus-node-exporter.service.d/override.conf
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter \
+  --web.listen-address=127.0.0.1:9100
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart prometheus-node-exporter
+```
+
+9. Set up the node exporter config
+nano into /etc/prometheus/prometheus.yml :
+```
+global:
+  scrape_interval:     15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+  # scrape_timeout is set to the global default (10s).
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  external_labels:
+      monitor: 'example'
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets: ['localhost:9093']
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+scrape_configs:
+  # Self-scrape (needs auth because you locked down /metrics)
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+    basic_auth:
+      username: admin
+      password: "YOUR_ADMIN_PASSWORD"
+  # Host-level Node Exporter on the KVM
+  - job_name: 'kvm_node'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          role: kvm
+```
+**Make sure to replace "YOUR_ADMIN_PASSWORD" with the one you made earlier**
+
+`sudo systemctl reload prometheus`
 
 
 ### Setting up Grafana
