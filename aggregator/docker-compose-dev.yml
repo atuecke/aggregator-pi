@@ -1,0 +1,17 @@
+# Docker compose for testing the aggregator locally
+
+version: "3.8"
+
+volumes:
+  data:
+
+services:
+  aggregator:
+    build:
+      context: ./
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/data

@@ -1,15 +1,47 @@
-version: "3.8"
+# Docker compose for BalenaOS.
+
+version: "2.4"
 
 volumes:
   data:
+    driver: local
 
 services:
   aggregator:
     build:
-      context: ./
-    env_file:
-      - .env
+      context: ./aggregator
+    restart: always
     ports:
+      - "80:8000"
       - "8000:8000"
+    environment:
+      - AGGREGATOR_UUID
+      - ANALYZER_WORKERS
+      - METRICS_INTERVAL_SEC
+      - GENERATE_MOCK_AUDIO
+      - ANALYZE_RECORDINGS
+      - UPLOAD_RAW_TO_CLOUD
+      - DELETE_RECORDINGS
+      - KVM_IP
+      - INFLUX_URL
+      - INFLUX_TOKEN
+      - INFLUX_ORG
+      - INFLUX_RECORDINGS_BUCKET
+      - INFLUX_METRICS_BUCKET
+      - INFLUX_ANALYSIS_TABLE
+      - INFLUX_UPLOADS_TABLE
+      - PROM_SCRAPE_INTERVAL
+      - PROM_USER
+      - PROM_PASS
+      - RECORDINGS_UPLOAD_ENDPOINT
+      - RECORDINGS_STREAM_ENDPOINT
+      - RCLONE_CONFIG_S3_TYPE
+      - RCLONE_CONFIG_S3_PROVIDER
+      - RCLONE_CONFIG_S3_ENDPOINT
+      - RCLONE_CONFIG_S3_ACCESS_KEY_ID
+      - RCLONE_CONFIG_S3_SECRET_ACCESS_KEY
+      - RCLONE_REMOTE_BUCKET
+      - ANALYZER_CPU_AFFINITY
+      - EVERYTHING_BUT_ANALYZER_CPU_AFFINITY
     volumes:
       - data:/data
