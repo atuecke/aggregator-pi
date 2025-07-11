@@ -51,7 +51,8 @@ INFLUX_ANALYSIS_TABLE    = _env("INFLUX_ANALYSIS_TABLE",    str, "analysis")
 INFLUX_UPLOADS_TABLE     = _env("INFLUX_UPLOADS_TABLE",     str, "uploads")
 
 # --- Listener Connection ----------------------------------------------------
-RECORDINGS_ENDPOINT      = _env("RECORDINGS_ENDPOINT", str, "/recording_endpoint")
+RECORDINGS_UPLOAD_ENDPOINT      = _env("RECORDINGS_UPLOAD_ENDPOINT", str, "/recordings_upload")
+RECORDINGS_STREAM_ENDPOINT      = _env("RECORDINGS_STREAM_ENDPOINT", str, "/recordings_stream")
 
 # --- Object store -----------------------------------------------------------
 RCLONE_REMOTE_BUCKET     = _env("RCLONE_REMOTE_BUCKET", str, "s3:my-bucket/data")
