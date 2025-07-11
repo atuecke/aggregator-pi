@@ -1,7 +1,9 @@
 
 # Aggregator Pi
 
-A docker image meant for a Raspberry Pi 4/5 that ingests raw sound data (.wav format) via HTTP from multiple sources and processes them. It can run local inference with [BirdNET](https://birdnet-team.github.io/BirdNET-Analyzer/) and uploads the results to InfluxDB 3 hosted in the cloud. It can also upload the raw files to an s3 bucket.
+A docker image meant for a Raspberry Pi 4/5 that ingests raw sound data (.wav format) via HTTP from multiple sources and processes them. It can run local inference with [BirdNET](https://birdnet-team.github.io/BirdNET-Analyzer/) and uploads the results to InfluxDB 3 hosted in the cloud, aswell as metrics to Prometheus. It can also upload the raw files to an s3 bucket.
+
+To get set up, follow the below steps.
 ## Testing the Container Locally
 
 Make sure you have docker installed
@@ -10,7 +12,7 @@ Configure settings in `/aggregator/settings.yaml`. Settings can also be set in e
 
 For example, if settings.yaml has `metrics_interval_sec: 15` but the .env file has `METRICS_INTERVAL_SEC="10"`, it will be set to 10 instead of 15.
 
-Once you have set all settings (make sure the server is set up first, see the server section below), you can run the container:
+**Once you have set all settings (make sure the server is set up first, see the server section below), you can run the container:**
 
 Navigate to /aggregator/ in the terminal and run `docker compose up`. Alternitively, if you are using VS Code, install the "Container Tools" extension and right click on `docker-compose-dev.yml` and click "Compose Up". A new volume is created automatically and mounted on /data/. All recordings and logs are saved in that directory. You should see metrics showing up in Prometheus. To view them, connect Grafana to Prometheus and create a Grafana dashboard. You may use the example json dashboard I have created. **Make sure to replace all references of "YOUR_UID_HERE" with whatever your Prometheus UID is in Grafana.** 
 
@@ -32,7 +34,7 @@ Option 2: To fully test the container, use [mock listener scripts](https://githu
 
 For example: `python stress_test_stream.py --file ./wav_samples/sample.wav --num-sources 5 --interval 2 --stagger 10 --url http://localhost:8000/recordings_stream` would randomly stagger 5 asynchronous emulated listeners across 10 seconds, with 2 seconds break between re-sending the file for each one.
 
-You can now run example queries for InfluxDB under the Explore tab in Grafana. You should also be able to see your raw sound files showing up in your s3 bucket if you have uploading turned on.
+You can now run example queries for InfluxDB under the Explore tab in Grafana. You should also be able to see your raw sound files showing up in your s3 bucket if you have uploading turned on. Additionally, you should see the various queues in my example dashboard start to increase. I have found that a PI5 can handle about 30 concurrent listeners.
 ## Using BalenaOS
 
 1. Follow [these](https://docs.balena.io/learn/getting-started/raspberrypi5/python/) instructions to create a Balena Fleet in Balena Cloud and flash the OS onto your Raspberry Pi. **Make sure you toggle "Public Device URL" to ON.** 
@@ -42,7 +44,28 @@ You can now run example queries for InfluxDB under the Explore tab in Grafana. Y
 3. Navigate inside of this directroy (`aggegator-pi/`) in a terminal window. Then push this container to your Balena Fleet.
 `balena push <fleet_name>`
 
+A new volume is created automatically and mounted on /data/. All recordings and logs are saved in that directory. You should see metrics showing up in Prometheus. To view them, connect Grafana to Prometheus and create a Grafana dashboard. You may use the example json dashboard I have created. **Make sure to replace all references of "YOUR_UID_HERE" with whatever your Prometheus UID is in Grafana.** 
 
+To actually test the container (on raw audio files), you have two options.
+
+Option 1: Make `generate_mock_audio` true in settings. This turns on a very basic process that generates white noise locally in the container just to make sure that the other processes work.
+
+Option 2: To fully test the container, use [mock listener scripts](https://github.com/atuecke/mock-listener) that I made. These are used to immitate multiple listeners, simultaneously streaming (or uploading) audio to an endpoint on the container. Make sure you have a mock audio .wav file saved to send. I would recommend downloading [this](https://xeno-canto.org/169082) and trimming it to 10-20 seconds. Run stress_test_stream.py with the following arguments:
+
+`--file`: The path to the audio file you want to repeatedly send
+
+`--num-sources`: The number of listeners you want to simulate sending **simultaneously**
+
+`--interval`: The number seconds to wait between each send. For a full duty cycle, this would be zero
+
+`--stagger`: The timespan to randomly stagger the emulated listeners. This stops all of them from sending at the exact same time, which is more realistic
+
+`--url`: The endpoint to send to. In this case, it would be your device's public url copied from Balena Cloud dashboard. For 
+example: `https://<your_device_uuid>.balena-devices.com/recordings_stream`.
+
+For example: `python stress_test_stream.py --file ./wav_samples/sample.wav --num-sources 5 --interval 2 --stagger 10 --url http://<your_device_uuid>/recordings_stream` would randomly stagger 5 asynchronous emulated listeners across 10 seconds, with 2 seconds break between re-sending the file for each one.
+
+You can now run example queries for InfluxDB under the Explore tab in Grafana. You should also be able to see your raw sound files showing up in your s3 bucket if you have uploading turned on. Additionally, you should see the various queues in my example dashboard start to increase. I have found that a PI5 can handle about 30 concurrent listeners.
 ## Setting up the Server
 
 ### Setting up InfluxDB 3
@@ -225,3 +248,6 @@ scrape_configs:
 Setting up Grafana on the server for data visualization is the easiest and most straight forward part of setting up the server. Follow [their official](https://grafana.com/docs/grafana/latest/setup-grafana/installation/debian/) instructions. They even have a video.
 
 **Make sure to open TCP port 3000**
+
+### Setting up the s3 Bucket
+There really isn't one way to do this. I use [Chameleon Cloud's](https://www.chameleoncloud.org/) Object Store, but you could just as easily use an Amazon s3 bucket. Just make sure that all credentials are in your environment variables.
