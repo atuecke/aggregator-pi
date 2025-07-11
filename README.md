@@ -3,6 +3,16 @@
 
 A docker image meant for a Raspberry Pi 4/5 that ingests raw sound data (.wav format) via HTTP from multiple sources and processes them. It can run local inference with [BirdNET](https://birdnet-team.github.io/BirdNET-Analyzer/) and uploads the results to InfluxDB 3 hosted in the cloud. It can also upload the raw files to an s3 bucket.
 ## Testing the script locally
+
+Make sure you have docker installed
+
+Configure settings in `/aggregator/settings.yaml`. Settings can also be set in environment variables. Environment variables override settings in the yaml file. All secret variables such as  `influx_token` should be put in environment variables. Save environment variables in a new file `/aggregator/.env`. Any booleans should be`true/false` in config.yaml file or `"0"/"1"` in .env. Variables in config.yaml should be lowercase and their corresponding variables in .env should be uppercase.
+
+For example, if settings.yaml has `metrics_interval_sec: 15` but the .env file has `METRICS_INTERVAL_SEC="10"`, it will be set to 10 instead of 15.
+
+Once you have set all settings (make sure the server is set up first, see the server section below), you can run the container:
+
+Navigate to /aggregator/ in the terminal and run `docker compose up`. Alternitively, if you are using VS Code, install the "Container Tools" extension and right click on `docker-compose-dev.yml` and click "Compose Up". A new volume is created automatically and mounted on /data/. All recordings and logs are saved in that directory. You should see metrics showing up in Prometheus. To view them, create a Grafana dashboard. You may import the example json dashboard I have created.
 ## Setting up the Server
 
 ### Setting up InfluxDB 3
