@@ -56,6 +56,9 @@ class WaveAssembler:
         self.tmp_fh: Optional[io.BufferedWriter] = None
         self.tmp_path: Optional[Path] = None
         self.start_ts: Optional[str] = None  # UTC timestamp string
+        self.bytes_written: int = 0
+        self.last_header: bytes | None = None
+        self.max_temp_bytes = config.MAX_RECORDING_BYTES
 
     # -- file lifecycle ------------------------------------------------------
     def _open_new(self, first_payload: bytes):
@@ -66,15 +69,62 @@ class WaveAssembler:
         self.tmp_fh = self.tmp_path.open("wb")
         self.tmp_fh.write(first_payload)
         self.expected_seq = 1  # first data page must be seq 1
+        self.last_header = first_payload # save header for forced rollovers
+        self.bytes_written = len(first_payload)
         log.debug("Opened new WAV %s", self.tmp_path)
+
+        # ─── parse WAV header to compute bytes/sec & max-bytes ───────────────
+        try:
+            # WAV fmt: channels @offset 22 (2B), samplerate @24 (4B), bits/sample @34 (2B)
+            num_chan = struct.unpack_from("<H", first_payload, 22)[0]
+            samp_rate = struct.unpack_from("<I", first_payload, 24)[0]
+            bits_samp = struct.unpack_from("<H", first_payload, 34)[0]
+            bps = (bits_samp // 8) * num_chan * samp_rate
+            self.max_temp_bytes = bps * config.MAX_RECORDING_DURATION_SEC
+            log.debug(
+                "Header parsed: %d ch @%d Hz, %d-bit ⇒ %dB/s → max %dB",
+                num_chan, samp_rate, bits_samp, bps, self.max_temp_bytes
+            )
+        except Exception:
+            # fallback: no size limit until header re‑arrives
+            self.max_temp_bytes = config.MAX_RECORDING_BYTES
+            log.warning("Failed to parse WAV header; size-based roll set to %d", config.MAX_RECORDING_BYTES)
+
 
     def _finalise(self):
         """Close tmp file, move into recordings dir, enqueue jobs."""
         if not self.tmp_fh:
             return
         self.tmp_fh.flush()
+        # os.fsync(self.tmp_fh.fileno())
         self.tmp_fh.close()
 
+        path   = self.tmp_path
+        total  = path.stat().st_size           # full length on disk
+        riff_sz  = total - 8                   # RIFF chunk size
+
+        # ——— patch RIFF size (file_size - 8) at offset 4 ——————————
+        with path.open("r+b") as f:
+            # ── patch RIFF size at byte 4 ────────────────────────────────────
+            f.seek(4)
+            f.write(struct.pack("<I", riff_sz))
+
+             # ── scan header from byte 0 for 'data' label ─────────────────────
+            f.seek(0)
+            header_bytes = f.read(8192)             # big enough for bext/LIST
+            idx = header_bytes.find(b"data")
+            if idx < 0:
+                log.error("WAV header: no 'data' chunk found; skipping data-size patch")
+            else:
+                # subchunk2_size = total_bytes - (offset_of_data + 8)
+                data_size = total - (idx + 8)
+                f.seek(idx + 4)
+                f.write(struct.pack("<I", data_size))
+
+            f.flush()
+            os.fsync(f.fileno())
+
+        # # now save into recordings
         final_path = config.RECORDINGS_DIR / self.tmp_path.name[:-4]  # strip .tmp
         shutil.move(self.tmp_path, final_path)
         log.info("Finalised recording %s", final_path)
@@ -101,6 +151,7 @@ class WaveAssembler:
         self.tmp_path = None
         self.expected_seq = None
         self.start_ts = None
+        self.bytes_written = 0
 
     # -- frame ingestion -----------------------------------------------------
     def ingest_frame(self, seq: int, data: bytes):
@@ -134,7 +185,7 @@ class WaveAssembler:
 
         # gap detection
         if self.expected_seq is not None and seq != self.expected_seq:
-            log.debug("seq=%d, expected_seq=%d", seq, self.expected_seq)
+            # log.debug("seq=%d, expected_seq=%d", seq, self.expected_seq)
             missing = (seq - self.expected_seq) % (1 << 24)
             if 0 < missing <= MAX_SILENT_PAGES:
                 log.warning("Missing %d pages - padding silence", missing)
@@ -148,7 +199,18 @@ class WaveAssembler:
         # write page & bump expected seq
         self.tmp_fh.write(data)
         self.expected_seq = (seq + 1) % (1 << 24)
+        self.bytes_written += len(data)
 
+        # Forced rollover if we exceed max_temp_bytes
+        if self.max_temp_bytes is not None and self.bytes_written > self.max_temp_bytes:
+            log.debug("Temp file grew to %d bytes > %d; rolling over",
+                        self.bytes_written, self.max_temp_bytes)
+            self._finalise()
+            # immediately start a new file with the same header
+            assert self.last_header is not None, "No header to reopen with!"
+            self._open_new(self.last_header)
+            # counter stays as-is -> next expected seq is seq+1
+            self.expected_seq = (seq + 1) % (1 << 24)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FastAPI endpoint

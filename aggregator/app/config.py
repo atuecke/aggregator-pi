@@ -34,6 +34,8 @@ GENERATE_MOCK_AUDIO     = _env("GENERATE_MOCK_AUDIO",  lambda v: bool(int(v)), F
 ANALYZE_RECORDINGS = _env("ANALYZE_RECORDINGS", lambda v: bool(int(v)), True)
 UPLOAD_RAW_TO_CLOUD = _env("UPLOAD_RAW_TO_CLOUD", lambda v: bool(int(v)), True)
 DELETE_RECORDINGS = _env("DELETE_RECORDINGS", lambda v: bool(int(v)), True)
+MAX_RECORDING_BYTES    = _env("MAX_RECORDING_BYTES", int,   2000000)
+MAX_RECORDING_DURATION_SEC    = _env("MAX_RECORDING_DURATION_SEC", int,   25)
 
 # --- I/O directories ---------------------------------------------------------
 BASE_DIR          = Path(_env("BASE_DIR", str, "/data"))
