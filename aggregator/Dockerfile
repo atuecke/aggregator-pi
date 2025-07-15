@@ -5,7 +5,7 @@ FROM prom/prometheus AS promstage
 
 
 # Final runtime
-FROM --platform=$BUILDPLATFORM python:3.11-slim
+FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1
 
 # Copy binaries

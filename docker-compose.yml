@@ -43,5 +43,7 @@ services:
       - RCLONE_REMOTE_BUCKET
       - ANALYZER_CPU_AFFINITY
       - EVERYTHING_BUT_ANALYZER_CPU_AFFINITY
+      - MAX_RECORDING_BYTES
+      - MAX_RECORDING_DURATION_SEC
     volumes:
       - data:/data
