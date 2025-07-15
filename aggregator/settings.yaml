@@ -1,18 +1,46 @@
 aggregator_uuid: "pi-dev"
 
+analyzer_workers: 2
+analyzer_cpu_affinity: "0,1,2,3"
+everything_but_analyzer_cpu_affinity: "0,1"
+
 # General Settings
 metrics_interval_sec: 15
 generate_mock_audio: false
 analyze_recordings: true
 upload_raw_to_cloud: true
 delete_recordings: true
+max_recording_bytes: 2000000
+max_recording_duration_sec: 20
+
+# InfluxDB
+kvm_ip: "your_server_ip" # ex 123.456.78.901
+influx_url: "your_influx_url" # ex http://123.456.78.901:8181
+influx_token: "your_influx_token"
+influx_org: "" # leave blank if using InfluxDB 3 Core (default)
+influx_recordings_bucket: "recordings"
+influx_analysis_table: "analysis"
+influx_uploads_table: "uploads"
+
+# Prometheus
+prom_scrape_interval: "15s"
+prom_user: "admin" # Can be admin or a regular user
+prom_pass: "your_password"
+
+# Listener Connection
+recordings_upload_endpoint: "/recordings_upload"
+recordings_stream_endpoint: "/recordings_stream"
+
+# Rclone Config
+rclone_config_s3_type: "s3"
+rclone_config_s3_provider: "Ceph"
+rclone_config_s3_endpoint: "your_s3_endpoint" # ex https://myserver.org:7480
+rclone_config_s3_access_key_id: "your_s3_access_key_id"
+rclone_config_s3_secret_access_key: "your_s3_secret_access_key"
+rclone_remote_bucket: "your_remote_bucket" # ex s3://name/subdir
 
 # --- I/O directories ---------------------------------------------------------
 base_dir: "/data"
 recordings_dir: "/data/recordings"
 recordings_temp_dir: "/data/recordings_tmp"
 logs_dir: "/data/logs"
-
-
-# Listener Connection 
-recordings_endpoint: "/recording_endpoint"

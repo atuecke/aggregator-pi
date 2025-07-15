@@ -48,7 +48,6 @@ INFLUX_URL               = _env("INFLUX_URL",   str, None)
 INFLUX_TOKEN             = _env("INFLUX_TOKEN", str, None)
 INFLUX_ORG               = _env("INFLUX_ORG",   str, None)
 INFLUX_RECORDINGS_BUCKET = _env("INFLUX_RECORDINGS_BUCKET", str, None)
-INFLUX_METRICS_BUCKET    = _env("INFLUX_METRICS_BUCKET", str, None)
 INFLUX_ANALYSIS_TABLE    = _env("INFLUX_ANALYSIS_TABLE",    str, "analysis")
 INFLUX_UPLOADS_TABLE     = _env("INFLUX_UPLOADS_TABLE",     str, "uploads")
 
