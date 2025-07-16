@@ -33,6 +33,7 @@ def upload_job_loop():
         filename    = job.get("filename")
         local_path  = job.get("local_path")
         listener_id = job.get("listener_id")
+        recorded_timestamp = job.get("recorded_timestamp")
         path = Path(local_path)
 
         log.debug("Attempting to upload %s (msg %s)", filename, msg_id)
@@ -53,8 +54,9 @@ def upload_job_loop():
             # success → enqueue publish_upload
             payload = {
                 "filename": filename,
+                "recorded_timestamp": recorded_timestamp,
                 "remote": remote_path,
-                "uploaded_at": dt.datetime.utcnow().isoformat() + "Z",
+                "uploaded_timestamp": dt.datetime.utcnow().isoformat() + "Z",
                 "listener_id": listener_id,
             }
             redis_utils.enqueue_job("stream:publish_upload", payload)

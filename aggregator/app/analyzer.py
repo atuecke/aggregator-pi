@@ -35,6 +35,7 @@ def handle_job(msg_id: str, job: dict) -> None:
     filename    = job["filename"]
     local_path  = job["local_path"]
     listener_id = job["listener_id"]
+    recorded_timestamp = job["recorded_timestamp"]
     attempts    = int(job.get("attempts", 0))
 
     path = Path(local_path)
@@ -59,7 +60,7 @@ def handle_job(msg_id: str, job: dict) -> None:
 
         meta = {
             "filename": filename,
-            "recorded_timestamp": job.get("recorded_timestamp"),
+            "recorded_timestamp": recorded_timestamp,
             "analyzed_timestamp": dt.datetime.utcnow().isoformat() + "Z",
             "duration_sec": duration,
             "listener_id": listener_id,

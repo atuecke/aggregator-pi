@@ -62,17 +62,20 @@ def _analysis_publisher():
             continue
         msg_id, job = item
         filename = job.get("filename")
-        payload  = job
+
         log.debug("Publishing analysis for %s", filename)
 
         try:
             point = (
                 Point(config.INFLUX_ANALYSIS_TABLE)
-                .tag("filename", filename)
+                .tag("filename", job.get("filename"))
+                .tag("recorded_timestamp", job.get("recorded_timestamp"))
                 .tag("aggregator_uuid", config.AGGREGATOR_UUID)
-                .tag("listener_id", payload.get("listener_id"))
-                .field("data", json.dumps(payload))
-                .time(payload.get("analyzed_timestamp"))
+                .tag("listener_id", job.get("listener_id"))
+                .tag("duration_sec", job.get("duration_sec"))
+                .field("analyzed_timestamp", job.get("analyzed_timestamp"))
+                .field("detections", job.get("detections"))
+                .time(job.get("recorded_timestamp"), dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
             )
             client.write(point)
             log.info("Published analysis for %s", filename)
@@ -81,7 +84,7 @@ def _analysis_publisher():
         except Exception as exc:
             log.error("Failed to publish analysis for %s: %s", filename, exc)
             # dead-letter
-            dl = {**payload, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
+            dl = {**job, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
             redis_utils.enqueue_job(f"{ANALYSIS_STREAM}:dead", dl)
             redis_utils.ack_job(ANALYSIS_STREAM, ANALYSIS_GROUP, msg_id)
 
@@ -95,19 +98,20 @@ def _upload_publisher():
             continue
         msg_id, job = item
         filename = job.get("filename")
-        payload  = job
+
         log.debug("Publishing upload for %s", filename)
 
         try:
             point = (
                 Point(config.INFLUX_UPLOADS_TABLE)
                 .tag("filename", filename)
+                .tag("recorded_timestamp", job.get("recorded_timestamp"))
                 .tag("aggregator_uuid", config.AGGREGATOR_UUID)
-                .tag("listener_id", payload.get("listener_id"))
-                .field("remote", payload.get("remote"))
-                .field("uploaded_at", payload.get("uploaded_at"))
-                .field("data", json.dumps(payload))
-                .time(dt.datetime.utcnow().isoformat() + "Z")
+                .tag("listener_id", job.get("listener_id"))
+                .tag("duration_sec", job.get("duration_sec"))
+                .field("remote", job.get("remote"))
+                .field("uploaded_timestamp", job.get("uploaded_timestamp"))
+                .time(job.get("recorded_timestamp"), dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
             )
             client.write(point)
             log.info("Published upload for %s", filename)
@@ -115,7 +119,7 @@ def _upload_publisher():
 
         except Exception as exc:
             log.error("Failed to publish upload for %s: %s", filename, exc)
-            dl = {**payload, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
+            dl = {**job, "error": str(exc), "failed_at": dt.datetime.utcnow().isoformat()+"Z"}
             redis_utils.enqueue_job(f"{UPLOAD_STREAM}:dead", dl)
             redis_utils.ack_job(UPLOAD_STREAM, UPLOAD_GROUP, msg_id)
 
