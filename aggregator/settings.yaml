@@ -10,8 +10,14 @@ generate_mock_audio: false
 analyze_recordings: true
 upload_raw_to_cloud: true
 delete_recordings: true
-max_recording_bytes: 2000000
+
+# Receiver settings
+recordings_upload_endpoint: "/recordings_upload"
+recordings_stream_endpoint: "/recordings_stream"
+max_recording_bytes: 2000000 # overrites the max duration sec
 max_recording_duration_sec: 20
+min_recording_duration_sec: 3 
+concat_short_recordings: true # If true, concatenate short recordings to the next one; if false, delete them
 
 # InfluxDB
 kvm_ip: "your_server_ip" # ex 123.456.78.901
@@ -26,10 +32,6 @@ influx_uploads_table: "uploads"
 prom_scrape_interval: "15s"
 prom_user: "admin" # Can be admin or a regular user
 prom_pass: "your_password"
-
-# Listener Connection
-recordings_upload_endpoint: "/recordings_upload"
-recordings_stream_endpoint: "/recordings_stream"
 
 # Rclone Config
 rclone_config_s3_type: "s3"

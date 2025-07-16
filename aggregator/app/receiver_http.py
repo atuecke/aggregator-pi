@@ -35,10 +35,6 @@ PAGE_BYTES          = 32_768          # 32 KiB page written by AudioMoth
 FRAME_HEADER_BYTES  = 5               # uint24 seq  +  uint16 len
 MAX_SILENT_PAGES    = 9               # ≈ 3 s gap
 
-# New configuration options
-MIN_RECORDING_DURATION_SEC = 3        # Minimum recording length in seconds
-CONCAT_SHORT_RECORDINGS = True        # If True, concatenate short recordings; if False, delete them
-
 # --------------------------------------------------------------------------- #
 utils.setup_logging()
 log = utils.logging.getLogger("app.receiver_http")
@@ -87,7 +83,7 @@ class WaveAssembler:
     def _open_new(self, first_payload: bytes):
         """Start a new WAV file (first_payload is the 44-byte RIFF header)."""
         # Check if we have a pending short file to concatenate
-        if self.pending_short_file and CONCAT_SHORT_RECORDINGS:
+        if self.pending_short_file and config.CONCAT_SHORT_RECORDINGS:
             log.info("Concatenating previous short recording (%0.2fs) with new stream", 
                      self.pending_short_duration)
             # We'll append to the existing file instead of creating a new one
@@ -202,18 +198,18 @@ class WaveAssembler:
         log.debug("Recording duration: %.2f seconds, gaps: %d", duration, self.num_gaps)
 
         # Check if recording meets minimum duration
-        if duration < MIN_RECORDING_DURATION_SEC:
-            if self.gap_induced_rollover or not CONCAT_SHORT_RECORDINGS:
+        if duration < config.MIN_RECORDING_DURATION_SEC:
+            if self.gap_induced_rollover or not config.CONCAT_SHORT_RECORDINGS:
                 # Delete short recordings if gap-induced or concatenation disabled
                 log.warning("Recording too short (%.2fs < %ds)%s - deleting %s", 
-                           duration, MIN_RECORDING_DURATION_SEC,
+                           duration, config.MIN_RECORDING_DURATION_SEC,
                            " due to gap-induced rollover" if self.gap_induced_rollover else "",
                            path)
                 path.unlink()
             else:
                 # Queue for concatenation with next recording
                 log.info("Recording too short (%.2fs < %ds) - queuing for concatenation", 
-                         duration, MIN_RECORDING_DURATION_SEC)
+                         duration, config.MIN_RECORDING_DURATION_SEC)
                 self.pending_short_file = path
                 self.pending_short_duration = duration
                 self.pending_short_bytes = self.bytes_written

@@ -18,6 +18,8 @@ if Path(DEFAULT_CFG_PATH).is_file():
 def _env(name, cast=str, default=None):
     val = os.getenv(name)
     if val is not None:
+        val = "1" if val=="true" else val
+        val = "0" if val=="false" else val
         return cast(val)
     # look in YAML (keys in lower_snake_case)
     snake = name.lower()
@@ -34,8 +36,14 @@ GENERATE_MOCK_AUDIO     = _env("GENERATE_MOCK_AUDIO",  lambda v: bool(int(v)), F
 ANALYZE_RECORDINGS = _env("ANALYZE_RECORDINGS", lambda v: bool(int(v)), True)
 UPLOAD_RAW_TO_CLOUD = _env("UPLOAD_RAW_TO_CLOUD", lambda v: bool(int(v)), True)
 DELETE_RECORDINGS = _env("DELETE_RECORDINGS", lambda v: bool(int(v)), True)
+
+#  --- Receiver Settings ------------------------------------------------------
+RECORDINGS_UPLOAD_ENDPOINT      = _env("RECORDINGS_UPLOAD_ENDPOINT", str, "/recordings_upload")
+RECORDINGS_STREAM_ENDPOINT      = _env("RECORDINGS_STREAM_ENDPOINT", str, "/recordings_stream")
 MAX_RECORDING_BYTES    = _env("MAX_RECORDING_BYTES", int,   2000000)
 MAX_RECORDING_DURATION_SEC    = _env("MAX_RECORDING_DURATION_SEC", int,   20)
+MIN_RECORDING_DURATION_SEC = _env("MIN_RECORDING_DURATION_SEC", int,   3)
+CONCAT_SHORT_RECORDINGS = _env("CONCAT_SHORT_RECORDINGS", lambda v: bool(int(v)), True)
 
 # --- I/O directories ---------------------------------------------------------
 BASE_DIR          = Path(_env("BASE_DIR", str, "/data"))
@@ -50,10 +58,6 @@ INFLUX_ORG               = _env("INFLUX_ORG",   str, None)
 INFLUX_RECORDINGS_BUCKET = _env("INFLUX_RECORDINGS_BUCKET", str, None)
 INFLUX_ANALYSIS_TABLE    = _env("INFLUX_ANALYSIS_TABLE",    str, "analysis")
 INFLUX_UPLOADS_TABLE     = _env("INFLUX_UPLOADS_TABLE",     str, "uploads")
-
-# --- Listener Connection ----------------------------------------------------
-RECORDINGS_UPLOAD_ENDPOINT      = _env("RECORDINGS_UPLOAD_ENDPOINT", str, "/recordings_upload")
-RECORDINGS_STREAM_ENDPOINT      = _env("RECORDINGS_STREAM_ENDPOINT", str, "/recordings_stream")
 
 # --- Object store -----------------------------------------------------------
 RCLONE_REMOTE_BUCKET     = _env("RCLONE_REMOTE_BUCKET", str, "s3:my-bucket/data")
