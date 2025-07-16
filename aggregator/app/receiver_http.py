@@ -321,6 +321,15 @@ class WaveAssembler:
             self.pending_start_ts = None
             self.pending_num_gaps = 0
 
+
+def clear_temp_folder():
+    log.info("Clearning the temporary recordings folder")
+    temp_path = config.RECORDINGS_TMP_DIR
+    shutil.rmtree(temp_path)
+    Path(temp_path).mkdir()
+
+clear_temp_folder()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FastAPI endpoint
 # ─────────────────────────────────────────────────────────────────────────────
