@@ -44,6 +44,9 @@ MAX_RECORDING_BYTES    = _env("MAX_RECORDING_BYTES", int,   2000000)
 MAX_RECORDING_DURATION_SEC    = _env("MAX_RECORDING_DURATION_SEC", int,   20)
 MIN_RECORDING_DURATION_SEC = _env("MIN_RECORDING_DURATION_SEC", int,   3)
 CONCAT_SHORT_RECORDINGS = _env("CONCAT_SHORT_RECORDINGS", lambda v: bool(int(v)), True)
+AUDIO_NUM_CHANNELS = _env("AUDIO_NUM_CHANNELS", int, 1)
+AUDIO_SAMPLE_RATE = _env("AUDIO_SAMPLE_RATE", int, 48000)
+AUDIO_BITS_PER_SAMPLE = _env("AUDIO_BITS_PER_SAMPLE", int, 16)
 
 # --- I/O directories ---------------------------------------------------------
 BASE_DIR          = Path(_env("BASE_DIR", str, "/data"))

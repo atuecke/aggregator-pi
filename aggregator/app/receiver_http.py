@@ -115,9 +115,9 @@ class WaveAssembler:
             return self.last_header
 
         # ── 3.  synthesize a default 48 kHz mono header from settings ──────────
-        ch   = getattr(config, "NUM_CHANNELS",      1)
-        sr   = getattr(config, "AUDIO_SAMPLE_RATE", 48_000)
-        bps  = getattr(config, "BITS_PER_SAMPLE",   16)
+        ch   = config.AUDIO_NUM_CHANNELS
+        sr   = config.AUDIO_SAMPLE_RATE
+        bps  = config.AUDIO_BITS_PER_SAMPLE
         br   = sr * ch * bps // 8                  # byte‑rate
         align = ch * bps // 8
 
