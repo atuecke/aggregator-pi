@@ -46,5 +46,8 @@ services:
       - MAX_RECORDING_DURATION_SEC
       - MIN_RECORDING_DURATION_SEC
       - CONCAT_SHORT_RECORDINGS
+      - AUDIO_NUM_CHANNELS
+      - AUDIO_SAMPLE_RATE
+      - AUDIO_BITS_PER_SAMPLE
     volumes:
       - data:/data
