@@ -32,16 +32,17 @@ _analyzer = Analyzer() # model loads once here
 
 
 def handle_job(msg_id: str, job: dict) -> None:
-    filename    = job["filename"]
-    local_path  = job["local_path"]
-    listener_id = job["listener_id"]
-    recorded_timestamp = job["recorded_timestamp"]
-    attempts    = int(job.get("attempts", 0))
-
-    path = Path(local_path)
-    log.debug("Worker %s analyzing %s (attempt %d)", WORKER_ID, filename, attempts)
 
     try:
+        filename    = job["filename"]
+        local_path  = job["local_path"]
+        listener_id = job["listener_id"]
+        recorded_timestamp = job["recorded_timestamp"]
+        attempts    = int(job.get("attempts", 0))
+
+        path = Path(local_path)
+        log.debug("Worker %s analyzing %s (attempt %d)", WORKER_ID, filename, attempts)
+        
         with wave.open(str(path)) as wf:
             duration = wf.getnframes() / wf.getframerate()
 

@@ -401,6 +401,7 @@ async def upload_audio(
 
     payload = {
         "filename": filename,
+        "recorded_timestamp": dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
         "listener_id": listener_id,
         "local_path": str(recording_path),
         "num_gaps": 0
