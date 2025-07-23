@@ -9,6 +9,7 @@ Design rules
 ------------
 * A *RIFF/WAV header* arrives as frame #0 (length = 44 B) after every
   duty-cycle rollover or 4.3 GB limit; we treat that as "start new file".
+  It can also arrive at the start of any frame (including 0) that has audio data proceeding it
 * Missing ≤ ``MAX_SILENT_PAGES`` (default 9 ≈ 3 s at 48 k Hz) ⇒ pad with
   zero-filled pages so BirdNET windows stay aligned.
 * Missing  > ``MAX_SILENT_PAGES`` ⇒ close current WAV, start a fresh one.
