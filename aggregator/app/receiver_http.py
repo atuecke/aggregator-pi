@@ -1,9 +1,9 @@
 """
 Streaming-receiver for 32 KiB audio pages sent by an ESP32 over HTTP-chunked
-transfer.  Each page is wrapped in a **5-byte frame header**:
+transfer.  Each page is wrapped in a **6-byte frame header**:
 
     Byte 0-2  little-endian sequence-number  (uint24, wraps at 16 777 216)
-    Byte 3-4  little-endian payload-length   (uint16, 0x8000 for audio pages)
+    Byte 3-5  little-endian payload-length   (uint24, up to 16 777 215 bytes)
 
 Design rules
 ------------
@@ -16,6 +16,7 @@ Design rules
   ``/data/recordings/`` and enqueue *analyze* / *upload* Redis jobs.
 * Files shorter than MIN_RECORDING_DURATION_SEC are either deleted or
   concatenated with the next file depending on CONCAT_SHORT_RECORDINGS setting.
+* Gap count is tracked and included in Redis payloads for quality monitoring.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from . import config, utils, redis_utils
 # Constants - tweak via env-vars / YAML                                       #
 # --------------------------------------------------------------------------- #
 PAGE_BYTES          = 32_768          # 32 KiB page written by AudioMoth
-FRAME_HEADER_BYTES  = 5               # uint24 seq  +  uint16 len
+FRAME_HEADER_BYTES  = 6               # uint24 seq  +  uint24 len
 MAX_SILENT_PAGES    = 9               # ≈ 3 s gap
 
 # --------------------------------------------------------------------------- #
@@ -270,7 +271,7 @@ class WaveAssembler:
                         "(seq=%d, expected=%s)", seq, self.expected_seq)
             self._finalise()
             self._open_new(data)
-            # counter stays as-is -> next expected seq is seq+1
+            # Since this continues the stream, expected_seq is seq+1
             self.expected_seq = (seq + 1) % (1 << 24)
             return
 
@@ -339,7 +340,7 @@ async def receive_stream(
     listener_id: str = Query(..., description="Unique ID of recording node"),
 ):
     """
-    Consume the chunked HTTP body in real-time, frame-parse 5-byte headers,
+    Consume the chunked HTTP body in real-time, frame-parse 6-byte headers,
     and stream pages to disk via :class:`WaveAssembler`.
     """
     log.info("New stream from %s", listener_id)
@@ -353,13 +354,13 @@ async def receive_stream(
             # parse as many complete frames as are available
             while len(buffer) >= FRAME_HEADER_BYTES:
                 seq  = int.from_bytes(buffer[0:3], "little")
-                plen = struct.unpack_from("<H", buffer, 3)[0]
+                plen = int.from_bytes(buffer[3:6], "little")
 
                 if len(buffer) < FRAME_HEADER_BYTES + plen:
                     break  # incomplete – wait for more bytes
 
-                payload = bytes(buffer[5:5 + plen])
-                del buffer[:5 + plen]  # pop from buffer
+                payload = bytes(buffer[6:6 + plen])
+                del buffer[:6 + plen]  # pop from buffer
 
                 assembler.ingest_frame(seq, payload)
 
