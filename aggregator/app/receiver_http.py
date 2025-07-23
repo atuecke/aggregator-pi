@@ -80,9 +80,72 @@ class WaveAssembler:
         self.num_gaps: int = 0  # Count of gaps/missing pages in current recording
         self.pending_num_gaps: int = 0  # Gaps in pending file
 
+    def _get_wav_header(self, payload: bytes) -> bytes:
+        """
+        Return a suitable WAV header for the current rollover.
+
+        Priority:
+        1. If `payload` starts with a RIFF/WAVE header, take everything up to (and
+        including) the 8-byte 'data' chunk preamble.  Length therefore adapts to
+        extra chunks such as LIST, bext, etc.
+        2. Otherwise reuse the last header we saw on this stream.
+        3. Finally build a minimal PCM header from settings.* constants.
+        """
+
+        # ── 1. Does this payload *begin* with RIFF/WAVE? ───────────────────────
+        if len(payload) >= 12 and payload[0:4] == b"RIFF" and payload[8:12] == b"WAVE":
+            # Try to locate the first 'data' label inside the first 8 kB
+            search_span = payload[:8192]          # plenty for normal headers
+            idx = search_span.find(b"data")
+            if idx >= 0 and len(payload) >= idx + 8:     # 'data' + size field
+                header = payload[:idx + 8]
+            else:
+                # couldn't find 'data' yet → fall back to minimum 44‑byte slice
+                header = payload[:44]
+
+            self.last_header = header               # cache for re‑use
+
+            log.debug("_get_wav_header: Found wave header in payload")
+            return header
+
+        # ── 2.  use cached header if we have one ───────────────────────────────
+        if self.last_header is not None:
+            log.debug("_get_wav_header: Defaulted wav header to last saved")
+            return self.last_header
+
+        # ── 3.  synthesize a default 48 kHz mono header from settings ──────────
+        ch   = getattr(config, "NUM_CHANNELS",      1)
+        sr   = getattr(config, "AUDIO_SAMPLE_RATE", 48_000)
+        bps  = getattr(config, "BITS_PER_SAMPLE",   16)
+        br   = sr * ch * bps // 8                  # byte‑rate
+        align = ch * bps // 8
+
+        default_header = (
+            b"RIFF" + b"\x00\x00\x00\x00"          # RIFF size patched later
+            + b"WAVEfmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little")            # PCM
+            + ch.to_bytes(2, "little")
+            + sr.to_bytes(4, "little")
+            + br.to_bytes(4, "little")
+            + align.to_bytes(2, "little")
+            + bps.to_bytes(2, "little")
+            + b"data" + b"\x00\x00\x00\x00"        # data size patched later
+        )
+
+        self.last_header = default_header
+        log.warning("_get_wav_header: Defaulted wav header to default settings")
+        return default_header
+    
+    def _starts_with_wav_header(self, data):
+        if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE":
+            # Try to locate the first 'data' label inside the first 8 kB
+            search_span = data[:8192]          # plenty for normal headers
+            idx = search_span.find(b"data")
+            return idx >= 0 and len(data) >= idx + 8     # 'data' + size field
+    
     # -- file lifecycle ------------------------------------------------------
     def _open_new(self, first_payload: bytes):
-        """Start a new WAV file (first_payload is the 44-byte RIFF header)."""
+        """Start a new WAV file (first_payload may be header-only *or* header+data)."""
         # Check if we have a pending short file to concatenate
         if self.pending_short_file and config.CONCAT_SHORT_RECORDINGS:
             log.info("Concatenating previous short recording (%0.2fs) with new stream", 
@@ -103,22 +166,26 @@ class WaveAssembler:
             self.pending_start_ts = None
             self.pending_num_gaps = 0
             # Restore the audio format from the new header
-            self._parse_wav_header(first_payload)
+
+            header_bytes = self._get_wav_header(first_payload)
+            self.last_header = header_bytes # store **only** the pure header for later forced roll‑overs
+            self._parse_wav_header(header_bytes)
             return
         
         self.start_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         filename = f"{self.listener_id}_{self.start_ts}.wav"
         self.tmp_path = config.RECORDINGS_TMP_DIR / (filename + ".tmp")
         self.tmp_fh = self.tmp_path.open("wb")
-        self.tmp_fh.write(first_payload)
+        self.tmp_fh.write(first_payload) # write the full payload (header + any initial audio)
         self.expected_seq = 1  # first data page must be seq 1
-        self.last_header = first_payload # save header for forced rollovers
         self.bytes_written = len(first_payload)
         self.num_gaps = 0  # Reset gap counter for new file
-        log.debug("Opened new WAV %s", self.tmp_path)
+        log.debug("Opened new WAV %s, first payload length is %s bytes", self.tmp_path, len(first_payload))
+        header_bytes = self._get_wav_header(first_payload) # grab just the header so rollovers don't duplicate audio
+        self.last_header = header_bytes # store **only** the pure header for later forced roll‑overs
 
         # Parse WAV header
-        self._parse_wav_header(first_payload)
+        self._parse_wav_header(header_bytes)
 
     def _parse_wav_header(self, header_bytes: bytes):
         """Parse WAV header to compute bytes/sec & max-bytes"""
@@ -163,7 +230,7 @@ class WaveAssembler:
             log.warning("Error calculating duration: %s", e)
             return 0.0
 
-    def _finalise(self):
+    def _finalise(self, force_no_concat = False):
         """Close tmp file, check duration, and either save, delete, or queue for concatenation."""
         if not self.tmp_fh:
             return
@@ -200,7 +267,7 @@ class WaveAssembler:
 
         # Check if recording meets minimum duration
         if duration < config.MIN_RECORDING_DURATION_SEC:
-            if self.gap_induced_rollover or not config.CONCAT_SHORT_RECORDINGS:
+            if self.gap_induced_rollover or not config.CONCAT_SHORT_RECORDINGS or force_no_concat:
                 # Delete short recordings if gap-induced or concatenation disabled
                 log.warning("Recording too short (%.2fs < %ds)%s - deleting %s", 
                            duration, config.MIN_RECORDING_DURATION_SEC,
@@ -260,16 +327,17 @@ class WaveAssembler:
         
         # new-header frame?
         if seq == 0:
+            log.debug("0 seq detected. Rolling file.")
             # close any previous file
             self._finalise()
             self._open_new(data)
             return
         
         # Header sniffing – does payload *start* with RIFF/WAVE?
-        if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE":
+        if self._starts_with_wav_header(data):
             log.warning("RIFF header detected mid-stream; rolling file "
                         "(seq=%d, expected=%s)", seq, self.expected_seq)
-            self._finalise()
+            self._finalise(force_no_concat=True) # If there is a new header, then there could be a gap in the recording -> do not concat
             self._open_new(data)
             # Since this continues the stream, expected_seq is seq+1
             self.expected_seq = (seq + 1) % (1 << 24)
@@ -309,7 +377,7 @@ class WaveAssembler:
             self._open_new(self.last_header)
             # Since this is a size-based rollover (not gap-based), the expected_seq continues
             self.expected_seq = (seq + 1) % (1 << 24)
-
+    
     def cleanup_pending_files(self):
         """Clean up any pending short files on stream end"""
         if self.pending_short_file:
@@ -371,7 +439,7 @@ async def receive_stream(
         return JSONResponse({"status": "ok", "listener": listener_id})
 
     except Exception as exc:
-        log.exception("Stream from %s aborted: %s", listener_id, exc)
+        log.exception("Stream from %s aborted: %s", listener_id)
         assembler._finalise()
         assembler.cleanup_pending_files()
         raise HTTPException(500, f"Receiver error: {exc}") from exc
