@@ -16,15 +16,24 @@ if Path(DEFAULT_CFG_PATH).is_file():
 # 2) Helper to read an int, bool, or str:  ENV  →  YAML default  →  hardcoded
 # ──────────────────────────────────────────────────────────────────────────────
 def _env(name, cast=str, default=None):
-    val = os.getenv(name)
-    if val is not None:
-        val = "1" if val=="true" else val
-        val = "0" if val=="false" else val
-        return cast(val)
+    try:
+        val = os.getenv(name)
+        if val is not None:
+            # handle various bool expressions in env vars
+            if cast is bool:
+                v = val.strip().lower()
+                if v in {"1", "true", "t", "yes", "y"}: return True
+                if v in {"0", "false", "f", "no", "n"}: return False
+            return cast(val)
+    except (ValueError, TypeError, KeyError):
+        pass
     # look in YAML (keys in lower_snake_case)
-    snake = name.lower()
-    if snake in _defaults:
-        return cast(_defaults[snake])
+    try:
+        snake = name.lower()
+        if snake in _defaults:
+            return _defaults[snake]
+    except (ValueError, TypeError, KeyError):
+        pass
     return default
 
 # ──────────────────────────────────────────────────────────────────────────────
