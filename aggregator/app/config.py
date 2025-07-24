@@ -21,19 +21,23 @@ def _env(name, cast=str, default=None):
         if val is not None:
             # handle various bool expressions in env vars
             if cast is bool:
-                v = val.strip().lower()
-                if v in {"1", "true", "t", "yes", "y"}: return True
-                if v in {"0", "false", "f", "no", "n"}: return False
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    v = val.strip().lower()
+                    if v in {"1", "true", "t", "yes", "y"}: return True
+                    if v in {"0", "false", "f", "no", "n"}: return False
+                raise ValueError(f"Cannot interpret {val!r} as bool")
             return cast(val)
-    except (ValueError, TypeError, KeyError):
-        pass
+    except (ValueError, TypeError, KeyError) as e:
+        raise ValueError(f"ENV var {name} could not be cast: {e}") from e
     # look in YAML (keys in lower_snake_case)
     try:
         snake = name.lower()
         if snake in _defaults:
             return _defaults[snake]
-    except (ValueError, TypeError, KeyError):
-        pass
+    except (ValueError, TypeError, KeyError) as e:
+        raise ValueError(f"YAML default {snake} could not be cast: {e}") from e
     return default
 
 # ──────────────────────────────────────────────────────────────────────────────
