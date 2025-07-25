@@ -17,7 +17,6 @@ recordings_stream_endpoint: "/recordings_stream"
 max_recording_bytes: 2000000 # overrites the max duration sec
 max_recording_duration_sec: 20
 min_recording_duration_sec: 3 
-concat_short_recordings: true # If true, concatenate short recordings to the next one; if false, delete them
 audio_num_channels: 1
 audio_sample_rate: 48000
 audio_bits_per_sample: 16

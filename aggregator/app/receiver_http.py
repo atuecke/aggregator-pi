@@ -15,15 +15,14 @@ Design rules
 * Missing  > ``MAX_SILENT_PAGES`` ⇒ close current WAV, start a fresh one.
 * On TCP disconnect we finalise the current file, move it atomically into
   ``/data/recordings/`` and enqueue *analyze* / *upload* Redis jobs.
-* Files shorter than MIN_RECORDING_DURATION_SEC are either deleted or
-  concatenated with the next file depending on CONCAT_SHORT_RECORDINGS setting.
+* Files shorter than MIN_RECORDING_DURATION_SEC are deleted.
 * Gap count is tracked and included in Redis payloads for quality monitoring.
 """
 
 from __future__ import annotations
 import asyncio, datetime as dt, io, os, shutil, struct, time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import FastAPI, Request, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
@@ -36,6 +35,8 @@ from . import config, utils, redis_utils
 PAGE_BYTES          = 32_768          # 32 KiB page written by AudioMoth
 FRAME_HEADER_BYTES  = 6               # uint24 seq  +  uint24 len
 MAX_SILENT_PAGES    = 9               # ≈ 3 s gap
+METADATA_SEQ        = 0xFFFFFF        # Special sequence number for metadata frames
+MAX_SEQ             = 0xFFFFFE        # Maximum valid sequence number (before metadata)
 
 # --------------------------------------------------------------------------- #
 utils.setup_logging()
@@ -63,6 +64,7 @@ class WaveAssembler:
         self.bytes_written: int = 0
         self.last_header: bytes | None = None
         self.max_temp_bytes = config.MAX_RECORDING_BYTES
+        self.seen_first_header = False  # Track if we've seen the initial header
         
         # Audio format info for duration calculation
         self.sample_rate: int = 48000  # default
@@ -70,226 +72,217 @@ class WaveAssembler:
         self.bits_per_sample: int = 16 # default
         self.bytes_per_second: int = 96000  # default
         
-        # For handling short recordings
-        self.pending_short_file: Optional[Path] = None
-        self.pending_short_duration: float = 0.0
-        self.pending_short_bytes: int = 0  # Track bytes in pending file
-        self.pending_start_ts: Optional[str] = None  # Original timestamp
-        self.gap_induced_rollover: bool = False  # Track if rollover was due to gap
-        
         # Gap tracking
         self.num_gaps: int = 0  # Count of gaps/missing pages in current recording
-        self.pending_num_gaps: int = 0  # Gaps in pending file
 
-    def _get_wav_header(self, payload: bytes) -> bytes:
+    def _extract_wav_header_and_body(self, payload: bytes) -> Tuple[Optional[bytes], bytes]:
         """
-        Return a suitable WAV header for the current rollover.
-
-        Priority:
-        1. If `payload` starts with a RIFF/WAVE header, take everything up to (and
-        including) the 8-byte 'data' chunk preamble.  Length therefore adapts to
-        extra chunks such as LIST, bext, etc.
-        2. Otherwise reuse the last header we saw on this stream.
-        3. Finally build a minimal PCM header from settings.* constants.
+        Extract WAV header and remaining audio data from a payload.
+        
+        Returns:
+            Tuple of (header_bytes, audio_data)
+            - header_bytes: The WAV header if found at start of payload, None otherwise
+            - audio_data: The remaining audio data after the header (or full payload if no header)
         """
-
-        # ── 1. Does this payload *begin* with RIFF/WAVE? ───────────────────────
+        # Check if payload starts with RIFF/WAVE header
         if len(payload) >= 12 and payload[0:4] == b"RIFF" and payload[8:12] == b"WAVE":
-            # Try to locate the first 'data' label inside the first 8 kB
-            search_span = payload[:8192]          # plenty for normal headers
+            # Try to locate the 'data' chunk
+            search_span = payload[:8192]  # Search in first 8KB
             idx = search_span.find(b"data")
-            if idx >= 0 and len(payload) >= idx + 8:     # 'data' + size field
-                header = payload[:idx + 8]
-            else:
-                # couldn't find 'data' yet → fall back to minimum 44‑byte slice
-                header = payload[:44]
+            
+            if idx >= 0 and len(payload) >= idx + 8:  # Found 'data' + size field
+                header_end = idx + 8
+                header_bytes = payload[:header_end]
+                audio_data = payload[header_end:]
+                log.debug("Extracted WAV header (%d bytes) from payload", len(header_bytes))
+                return header_bytes, audio_data
+        
+        # No header found
+        return None, payload
 
-            self.last_header = header               # cache for re‑use
-
-            log.debug("_get_wav_header: Found wave header in payload")
-            return header
-
-        # ── 2.  use cached header if we have one ───────────────────────────────
-        if self.last_header is not None:
-            log.debug("_get_wav_header: Defaulted wav header to last saved")
-            return self.last_header
-
-        # ── 3.  synthesize a default 48 kHz mono header from settings ──────────
-        ch   = config.AUDIO_NUM_CHANNELS
-        sr   = config.AUDIO_SAMPLE_RATE
-        bps  = config.AUDIO_BITS_PER_SAMPLE
-        br   = sr * ch * bps // 8                  # byte‑rate
+    def _build_default_wav_header(self) -> bytes:
+        """
+        Build a default PCM WAV header from configuration settings.
+        
+        Returns:
+            bytes: A minimal 44-byte WAV header
+        """
+        ch = config.AUDIO_NUM_CHANNELS
+        sr = config.AUDIO_SAMPLE_RATE
+        bps = config.AUDIO_BITS_PER_SAMPLE
+        br = sr * ch * bps // 8  # byte-rate
         align = ch * bps // 8
 
-        default_header = (
-            b"RIFF" + b"\x00\x00\x00\x00"          # RIFF size patched later
+        header = (
+            b"RIFF" + b"\x00\x00\x00\x00"          # RIFF size (patched later)
             + b"WAVEfmt " + (16).to_bytes(4, "little")
-            + (1).to_bytes(2, "little")            # PCM
-            + ch.to_bytes(2, "little")
-            + sr.to_bytes(4, "little")
-            + br.to_bytes(4, "little")
-            + align.to_bytes(2, "little")
-            + bps.to_bytes(2, "little")
-            + b"data" + b"\x00\x00\x00\x00"        # data size patched later
+            + (1).to_bytes(2, "little")            # PCM format
+            + ch.to_bytes(2, "little")             # Channels
+            + sr.to_bytes(4, "little")             # Sample rate
+            + br.to_bytes(4, "little")             # Byte rate
+            + align.to_bytes(2, "little")          # Block align
+            + bps.to_bytes(2, "little")            # Bits per sample
+            + b"data" + b"\x00\x00\x00\x00"        # data size (patched later)
         )
-
-        self.last_header = default_header
-        log.warning("_get_wav_header: Defaulted wav header to default settings")
-        return default_header
-    
-    def _starts_with_wav_header(self, data):
-        if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE":
-            # Try to locate the first 'data' label inside the first 8 kB
-            search_span = data[:8192]          # plenty for normal headers
-            idx = search_span.find(b"data")
-            return idx >= 0 and len(data) >= idx + 8     # 'data' + size field
-    
-    # -- file lifecycle ------------------------------------------------------
-    def _open_new(self, first_payload: bytes):
-        """Start a new WAV file (first_payload may be header-only *or* header+data)."""
-        # Check if we have a pending short file to concatenate
-        if self.pending_short_file and config.CONCAT_SHORT_RECORDINGS:
-            log.info("Concatenating previous short recording (%0.2fs) with new stream", 
-                     self.pending_short_duration)
-            # We'll append to the existing file instead of creating a new one
-            self.tmp_path = self.pending_short_file
-            self.tmp_fh = self.tmp_path.open("ab")
-            # Restore state from pending file
-            self.start_ts = self.pending_start_ts  # Keep original timestamp
-            self.bytes_written = self.pending_short_bytes  # Continue from previous byte count
-            self.num_gaps = self.pending_num_gaps  # Carry over gap count
-            # Don't write the new header - we're continuing the previous file
-            # Just update expected_seq and continue
-            self.expected_seq = 1
-            self.pending_short_file = None
-            self.pending_short_duration = 0.0
-            self.pending_short_bytes = 0
-            self.pending_start_ts = None
-            self.pending_num_gaps = 0
-            # Restore the audio format from the new header
-
-            header_bytes = self._get_wav_header(first_payload)
-            self.last_header = header_bytes # store **only** the pure header for later forced roll‑overs
-            self._parse_wav_header(header_bytes)
-            return
         
-        self.start_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        filename = f"{self.listener_id}_{self.start_ts}.wav"
-        self.tmp_path = config.RECORDINGS_TMP_DIR / (filename + ".tmp")
-        self.tmp_fh = self.tmp_path.open("wb")
-        self.tmp_fh.write(first_payload) # write the full payload (header + any initial audio)
-        self.expected_seq = 1  # first data page must be seq 1
-        self.bytes_written = len(first_payload)
-        self.num_gaps = 0  # Reset gap counter for new file
-        log.debug("Opened new WAV %s, first payload length is %s bytes", self.tmp_path, len(first_payload))
-        header_bytes = self._get_wav_header(first_payload) # grab just the header so rollovers don't duplicate audio
-        self.last_header = header_bytes # store **only** the pure header for later forced roll‑overs
-
-        # Parse WAV header
-        self._parse_wav_header(header_bytes)
+        log.debug("Built default WAV header: %d ch, %d Hz, %d-bit", ch, sr, bps)
+        return header
 
     def _parse_wav_header(self, header_bytes: bytes):
-        """Parse WAV header to compute bytes/sec & max-bytes"""
+        """
+        Parse WAV header to extract audio format parameters.
+        Updates instance variables for sample rate, channels, etc.
+        """
         try:
-            # WAV fmt: channels @offset 22 (2B), samplerate @24 (4B), bits/sample @34 (2B)
+            # WAV fmt chunk locations:
+            # - channels: offset 22 (2 bytes)
+            # - sample rate: offset 24 (4 bytes)  
+            # - bits per sample: offset 34 (2 bytes)
             self.num_channels = struct.unpack_from("<H", header_bytes, 22)[0]
             self.sample_rate = struct.unpack_from("<I", header_bytes, 24)[0]
             self.bits_per_sample = struct.unpack_from("<H", header_bytes, 34)[0]
             self.bytes_per_second = (self.bits_per_sample // 8) * self.num_channels * self.sample_rate
             self.max_temp_bytes = self.bytes_per_second * config.MAX_RECORDING_DURATION_SEC
+            
             log.debug(
-                "Header parsed: %d ch @%d Hz, %d-bit ⇒ %dB/s → max %dB",
+                "Parsed header: %d ch @ %d Hz, %d-bit => %d B/s, max %d B",
                 self.num_channels, self.sample_rate, self.bits_per_sample, 
                 self.bytes_per_second, self.max_temp_bytes
             )
-        except Exception:
-            # fallback: use defaults
+        except Exception as e:
+            # Fallback to defaults if parsing fails
             self.bytes_per_second = 96000  # 48kHz, 16-bit, mono
             self.max_temp_bytes = config.MAX_RECORDING_BYTES
-            log.warning("Failed to parse WAV header; using defaults: %dB/s", self.bytes_per_second)
+            log.warning("Failed to parse WAV header (%s), using defaults: %d B/s", e, self.bytes_per_second)
+
+    def _open_new(self, header_in_payload: bytes, audio_data: bytes):
+        """
+        Start a new WAV file with the given payload.
+        
+        Args:
+            first_payload: Initial data which may contain header and/or audio data
+        """
+        
+        # Determine which header to use
+        if header_in_payload:
+            # Use the header from the payload
+            wav_header = header_in_payload
+            self.last_header = header_in_payload  # Cache for future forced rollovers
+        elif self.last_header:
+            # Use cached header from previous file
+            wav_header = self.last_header
+            log.debug("Used last saved wave header for new file")
+        else:
+            # Build default header
+            wav_header = self._build_default_wav_header()
+            self.last_header = wav_header
+            log.debug("Used last default wave header for new file")
+        
+        # Parse header to update audio format info
+        self._parse_wav_header(wav_header)
+        
+        # Create new file
+        self.start_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        filename = f"{self.listener_id}_{self.start_ts}.wav"
+        self.tmp_path = config.RECORDINGS_TMP_DIR / (filename + ".tmp")
+        self.tmp_fh = self.tmp_path.open("wb")
+        
+        # Always write the header
+        self.tmp_fh.write(wav_header)
+        self.bytes_written = len(wav_header)
+        
+        # Write any audio data
+        if audio_data:
+            self.tmp_fh.write(audio_data)
+            self.bytes_written += len(audio_data)
+        
+        self.expected_seq = 1  # Next expected sequence number
+        self.num_gaps = 0  # Reset gap counter
+        
+        log.info("Opened new WAV %s, initial size: %d bytes", self.tmp_path.name, self.bytes_written)
 
     def _calculate_duration(self, file_path: Path) -> float:
-        """Calculate duration of WAV file in seconds"""
+        """
+        Calculate duration of WAV file in seconds.
+        
+        Args:
+            file_path: Path to the WAV file
+            
+        Returns:
+            Duration in seconds, or 0.0 if calculation fails
+        """
         try:
-            file_size = file_path.stat().st_size
-            # Subtract header size (typically 44 bytes, but could be more with metadata)
-            # Read the data chunk size instead for accuracy
             with file_path.open("rb") as f:
+                # Read header to find data chunk
                 f.seek(0)
                 header = f.read(8192)
                 idx = header.find(b"data")
-                if idx >= 0:
+                
+                if idx >= 0 and len(header) >= idx + 8:
+                    # Read data chunk size
                     f.seek(idx + 4)
                     data_size = struct.unpack("<I", f.read(4))[0]
                     duration = data_size / self.bytes_per_second
                     return duration
                 else:
-                    # Fallback: estimate based on file size
-                    audio_bytes = file_size - 44  # assume standard header
+                    # Fallback: estimate based on file size minus standard header
+                    file_size = file_path.stat().st_size
+                    audio_bytes = max(0, file_size - 44)
                     return audio_bytes / self.bytes_per_second
+                    
         except Exception as e:
-            log.warning("Error calculating duration: %s", e)
+            log.warning("Error calculating duration for %s: %s", file_path.name, e)
             return 0.0
 
-    def _finalise(self, force_no_concat = False):
-        """Close tmp file, check duration, and either save, delete, or queue for concatenation."""
+    def _finalise(self):
+        """Close temp file, patch headers, and move to final location or delete if too short."""
         if not self.tmp_fh:
             return
+            
         self.tmp_fh.flush()
         self.tmp_fh.close()
 
         path = self.tmp_path
-        total = path.stat().st_size
-        riff_sz = total - 8
+        total_size = path.stat().st_size
+        riff_size = total_size - 8
 
         # Patch RIFF and data chunk sizes
         with path.open("r+b") as f:
-            # Patch RIFF size at byte 4
+            # Patch RIFF size at offset 4
             f.seek(4)
-            f.write(struct.pack("<I", riff_sz))
+            f.write(struct.pack("<I", riff_size))
 
-            # Scan header for 'data' label
+            # Find and patch data chunk size
             f.seek(0)
             header_bytes = f.read(8192)
             idx = header_bytes.find(b"data")
-            if idx < 0:
-                log.error("WAV header: no 'data' chunk found; skipping data-size patch")
-            else:
-                data_size = total - (idx + 8)
+            
+            if idx >= 0:
+                data_size = total_size - (idx + 8)
                 f.seek(idx + 4)
                 f.write(struct.pack("<I", data_size))
+            else:
+                log.error("WAV header in %s has no 'data' chunk; skipping size patch", path.name)
 
             f.flush()
             os.fsync(f.fileno())
 
-        # Calculate duration
+        # Calculate duration and check minimum
         duration = self._calculate_duration(path)
-        log.debug("Recording duration: %.2f seconds, gaps: %d", duration, self.num_gaps)
+        log.debug("Recording %s: %.2f seconds, %d gaps", path.name, duration, self.num_gaps)
 
-        # Check if recording meets minimum duration
         if duration < config.MIN_RECORDING_DURATION_SEC:
-            if self.gap_induced_rollover or not config.CONCAT_SHORT_RECORDINGS or force_no_concat:
-                # Delete short recordings if gap-induced or concatenation disabled
-                log.warning("Recording too short (%.2fs < %ds)%s - deleting %s", 
-                           duration, config.MIN_RECORDING_DURATION_SEC,
-                           " due to gap-induced rollover" if self.gap_induced_rollover else "",
-                           path)
-                path.unlink()
-            else:
-                # Queue for concatenation with next recording
-                log.info("Recording too short (%.2fs < %ds) - queuing for concatenation", 
-                         duration, config.MIN_RECORDING_DURATION_SEC)
-                self.pending_short_file = path
-                self.pending_short_duration = duration
-                self.pending_short_bytes = self.bytes_written
-                self.pending_start_ts = self.start_ts
-                self.pending_num_gaps = self.num_gaps
+            # Too short - delete it
+            log.warning("Recording too short (%.2fs < %ds) - deleting %s", 
+                       duration, config.MIN_RECORDING_DURATION_SEC, path.name)
+            path.unlink()
         else:
-            # Recording is long enough - save it
-            final_path = config.RECORDINGS_DIR / self.tmp_path.name[:-4]  # strip .tmp
+            # Move to final location
+            final_path = config.RECORDINGS_DIR / self.tmp_path.name[:-4]  # Remove .tmp
             shutil.move(self.tmp_path, final_path)
-            log.info("Finalised recording %s (%.2fs, %d gaps)", final_path, duration, self.num_gaps)
+            log.info("Finalized recording %s (%.2fs, %d gaps)", final_path.name, duration, self.num_gaps)
 
+            # Prepare payload for downstream processing
             payload = {
                 "filename": final_path.name,
                 "recorded_timestamp": self.start_ts,
@@ -297,111 +290,122 @@ class WaveAssembler:
                 "local_path": str(final_path),
                 "num_gaps": self.num_gaps
             }
-            # enqueue downstream jobs
+            
+            # Enqueue jobs based on configuration
             if config.ANALYZE_RECORDINGS:
                 redis_utils.enqueue_job("stream:analyze", payload)
             if config.UPLOAD_RAW_TO_CLOUD:
-                redis_utils.enqueue_job("stream:upload",  payload)
-            if (not config.ANALYZE_RECORDINGS and
-                    not config.UPLOAD_RAW_TO_CLOUD and
-                    config.DELETE_RECORDINGS):
-                # immediately eligible for deletion
+                redis_utils.enqueue_job("stream:upload", payload)
+            if (not config.ANALYZE_RECORDINGS and 
+                not config.UPLOAD_RAW_TO_CLOUD and 
+                config.DELETE_RECORDINGS):
+                # Mark as done for immediate deletion
                 redis_utils.enqueue_job("stream:done", {**payload, "stage": "analyzed"})
                 redis_utils.enqueue_job("stream:done", {**payload, "stage": "uploaded"})
 
-        # reset state
+        # Reset state
         self.tmp_fh = None
         self.tmp_path = None
         self.expected_seq = None
         self.start_ts = None
         self.bytes_written = 0
-        self.gap_induced_rollover = False
         self.num_gaps = 0
 
-    # -- frame ingestion -----------------------------------------------------
     def ingest_frame(self, seq: int, data: bytes):
-        """Process one framed payload."""
-        # metadata frame (seq == 0xFFFFFF) – skip for now
-        if seq == 0xFFFFFF:
-            log.debug("Metadata frame (%d B) skipped", len(data))
+        """
+        Process one framed payload.
+        
+        Args:
+            seq: 24-bit sequence number (0 to 16777215, with 0xFFFFFF for metadata)
+            data: Frame payload data
+        """
+        # Skip metadata frames
+        if seq == METADATA_SEQ:
+            log.debug("Metadata frame (%d bytes) skipped", len(data))
             return
         
-        # new-header frame?
+        # Check for WAV header in payload
+        header_in_payload, audio_data = self._extract_wav_header_and_body(data)
+        
+        # Handle seq=0 (always starts new file)
         if seq == 0:
-            log.debug("0 seq detected. Rolling file.")
-            # close any previous file
-            self._finalise()
-            self._open_new(data)
+            log.info("New stream detected (seq=0%s)", " with header" if header_in_payload else "")
+            self._finalise()  # Close any existing file
+            self._open_new(header_in_payload, audio_data)
             return
         
-        # Header sniffing – does payload *start* with RIFF/WAVE?
-        if self._starts_with_wav_header(data):
-            log.warning("RIFF header detected mid-stream; rolling file "
-                        "(seq=%d, expected=%s)", seq, self.expected_seq)
-            self._finalise(force_no_concat=True) # If there is a new header, then there could be a gap in the recording -> do not concat
-            self._open_new(data)
-            # Since this continues the stream, expected_seq is seq+1
+        # Handle mid-stream header detection (indicates new recording)
+        if header_in_payload and self.tmp_fh is not None:
+            log.warning("WAV header detected mid-stream at seq=%d - starting new file", seq)
+            self._finalise()
+            self._open_new(header_in_payload, audio_data)
+            # Continue with next expected sequence after this frame
             self.expected_seq = (seq + 1) % (1 << 24)
             return
-
+        
+        # Handle data frames without active file
         if self.tmp_fh is None:
-            log.warning("Data frame before header - dropping %d B", len(data))
+            log.warning("Data frame (seq=%d) before header - dropping %d bytes", seq, len(data))
             return
 
-        # gap detection
+        # Gap detection and handling
         if self.expected_seq is not None and seq != self.expected_seq:
+            # Calculate gap size considering wraparound
             missing = (seq - self.expected_seq) % (1 << 24)
+            
             if 0 < missing <= MAX_SILENT_PAGES:
-                log.warning("Missing %d pages - padding silence", missing)
-                self.tmp_fh.write(b"\x00" * PAGE_BYTES * missing)
-                self.bytes_written += PAGE_BYTES * missing  # Track padded bytes
-                self.num_gaps += 1  # Increment gap counter
+                # Small gap - pad with silence
+                log.warning("Gap detected: missing %d pages (expected %d, got %d) - padding with silence", 
+                        missing, self.expected_seq, seq)
+                silence_bytes = b"\x00" * PAGE_BYTES * missing
+                self.tmp_fh.write(silence_bytes)
+                self.bytes_written += len(silence_bytes)
+                self.num_gaps += 1
             else:
-                log.warning("Gap %d pages > threshold; rolling file", missing)
-                self.gap_induced_rollover = True  # Mark as gap-induced
+                # Large gap - start new file
+                log.warning("Large gap of %d pages (expected %d, got %d) - rolling to new file", 
+                        missing, self.expected_seq, seq)
                 self._finalise()
-                # cannot write payload until new header arrives
+                # Wait for next header frame
                 return
 
-        # write page & bump expected seq
+        # Write audio data
         self.tmp_fh.write(data)
-        self.expected_seq = (seq + 1) % (1 << 24)
         self.bytes_written += len(data)
+        
+        # Update expected sequence, handling wraparound
+        self.expected_seq = (seq + 1) % (1 << 24)
+        # Skip metadata sequence number when wrapping
+        if self.expected_seq == METADATA_SEQ:
+            self.expected_seq = 0
+            log.debug("Sequence wrapped around to 0")
 
-        # Forced rollover if we exceed max_temp_bytes
-        if self.max_temp_bytes is not None and self.bytes_written > self.max_temp_bytes:
-            log.debug("Temp file grew to %d bytes > %d; rolling over",
-                        self.bytes_written, self.max_temp_bytes)
+        # Check for size-based rollover
+        if self.max_temp_bytes and self.bytes_written > self.max_temp_bytes:
+            log.info("File size limit reached (%d > %d bytes) - rolling to new file",
+                    self.bytes_written, self.max_temp_bytes)
             self._finalise()
-            # immediately start a new file with the same header
-            assert self.last_header is not None, "No header to reopen with!"
-            self._open_new(self.last_header)
-            # Since this is a size-based rollover (not gap-based), the expected_seq continues
-            self.expected_seq = (seq + 1) % (1 << 24)
-    
-    def cleanup_pending_files(self):
-        """Clean up any pending short files on stream end"""
-        if self.pending_short_file:
-            log.warning("Stream ended with pending short file (%.2fs) - deleting %s",
-                       self.pending_short_duration, self.pending_short_file)
-            self.pending_short_file.unlink()
-            self.pending_short_file = None
-            self.pending_short_duration = 0.0
-            self.pending_short_bytes = 0
-            self.pending_start_ts = None
-            self.pending_num_gaps = 0
+            # Start new file with cached header
+            if self.last_header:
+                self._open_new(self.last_header, None)
+                # Continue sequence numbering
+                self.expected_seq = (seq + 1) % (1 << 24)
+                if self.expected_seq == METADATA_SEQ:
+                    self.expected_seq = 0
 
 
 def clear_temp_folder():
-    log.info("Clearning the temporary recordings folder")
+    """Clear the temporary recordings folder on startup."""
+    log.info("Clearing the temporary recordings folder")
     temp_path = config.RECORDINGS_TMP_DIR
-    shutil.rmtree(temp_path)
-    Path(temp_path).mkdir()
+    if temp_path.exists():
+        shutil.rmtree(temp_path)
+    temp_path.mkdir(parents=True, exist_ok=True)
 
 clear_temp_folder()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FastAPI endpoint
+# FastAPI endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post(recordings_stream_endpoint)
 async def receive_stream(
@@ -409,10 +413,10 @@ async def receive_stream(
     listener_id: str = Query(..., description="Unique ID of recording node"),
 ):
     """
-    Consume the chunked HTTP body in real-time, frame-parse 6-byte headers,
-    and stream pages to disk via :class:`WaveAssembler`.
+    Consume chunked HTTP body in real-time, parse 6-byte frame headers,
+    and stream pages to disk via WaveAssembler.
     """
-    log.info("New stream from %s", listener_id)
+    log.info("New stream connection from listener: %s", listener_id)
     assembler = WaveAssembler(listener_id)
     buffer = bytearray()
 
@@ -420,74 +424,82 @@ async def receive_stream(
         async for chunk in request.stream():
             buffer.extend(chunk)
 
-            # parse as many complete frames as are available
+            # Parse all complete frames in buffer
             while len(buffer) >= FRAME_HEADER_BYTES:
-                seq  = int.from_bytes(buffer[0:3], "little")
+                # Extract frame header
+                seq = int.from_bytes(buffer[0:3], "little")
                 plen = int.from_bytes(buffer[3:6], "little")
 
+                # Wait for complete frame
                 if len(buffer) < FRAME_HEADER_BYTES + plen:
-                    break  # incomplete – wait for more bytes
+                    break
 
+                # Extract payload and remove from buffer
                 payload = bytes(buffer[6:6 + plen])
-                del buffer[:6 + plen]  # pop from buffer
+                del buffer[:6 + plen]
 
+                # Process frame
                 assembler.ingest_frame(seq, payload)
 
-        # client closed connection → finalise
+        # Connection closed - finalize any open file
         assembler._finalise()
-        # Clean up any pending short files
-        assembler.cleanup_pending_files()
+        log.info("Stream from %s completed successfully", listener_id)
         return JSONResponse({"status": "ok", "listener": listener_id})
 
     except Exception as exc:
-        log.exception("Stream from %s aborted: %s", listener_id)
+        log.exception("Stream from %s aborted", listener_id)
         assembler._finalise()
-        assembler.cleanup_pending_files()
         raise HTTPException(500, f"Receiver error: {exc}") from exc
 
-
-log.info("Receiver-stream endpoint mounted on http://localhost:8000%s", recordings_stream_endpoint)
 
 @app.post(recording_upload_endpoint)
 async def upload_audio(
     file: UploadFile = File(...),
     listener_id: str | None = Form(None),
 ):
-    log.info("New audio recording received from %s: %s", listener_id, file.filename)
+    """Handle direct audio file uploads (legacy endpoint)."""
+    log.info("Audio upload received from %s: %s", listener_id, file.filename)
+    
+    # Validate file type
     if not file.filename.lower().endswith((".wav", ".flac", ".mp3")):
         raise HTTPException(400, "Unsupported file type")
 
+    # Generate filename
     ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     base_name = Path(file.filename).name
     listener_id = listener_id or utils.get_listener_id_from_name(base_name)
     filename = f"{listener_id}_{ts}{Path(file.filename).suffix}"
 
+    # Save file
     recording_path = config.RECORDINGS_DIR / filename
-
     with recording_path.open("wb") as out:
         shutil.copyfileobj(file.file, out)
-    log.debug("Saved new recording to final path %s", recording_path)
+    
+    log.info("Saved uploaded recording: %s", recording_path)
 
+    # Prepare payload for downstream processing
     payload = {
         "filename": filename,
-        "recorded_timestamp": dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+        "recorded_timestamp": ts,
         "listener_id": listener_id,
         "local_path": str(recording_path),
         "num_gaps": 0
     }
     
-    if(config.ANALYZE_RECORDINGS):
+    # Enqueue jobs
+    if config.ANALYZE_RECORDINGS:
         redis_utils.enqueue_job("stream:analyze", payload)
-    if(config.UPLOAD_RAW_TO_CLOUD):
-        redis_utils.enqueue_job("stream:upload",  payload)
-    if(not config.ANALYZE_RECORDINGS and not config.UPLOAD_RAW_TO_CLOUD and config.DELETE_RECORDINGS):
-        # mark both as analyzed so that it gets deleted
-        redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "uploaded"})
-        redis_utils.enqueue_job("stream:done", {"filename": filename, "listener_id": listener_id, "stage": "analyzed"})
-
-
-    log.info("New recording %s", recording_path)
+    if config.UPLOAD_RAW_TO_CLOUD:
+        redis_utils.enqueue_job("stream:upload", payload)
+    if (not config.ANALYZE_RECORDINGS and 
+        not config.UPLOAD_RAW_TO_CLOUD and 
+        config.DELETE_RECORDINGS):
+        # Mark for deletion
+        redis_utils.enqueue_job("stream:done", {**payload, "stage": "analyzed"})
+        redis_utils.enqueue_job("stream:done", {**payload, "stage": "uploaded"})
 
     return {"status": "ok", "filename": filename}
 
-log.info("Legacy upload enpoint mounted on http://localhost:8000%s", recording_upload_endpoint)
+
+log.info("Stream endpoint: http://localhost:8000%s", recordings_stream_endpoint)
+log.info("Upload endpoint: http://localhost:8000%s", recording_upload_endpoint)
