@@ -32,7 +32,7 @@ VOLUME /data
 RUN pip install --no-cache-dir \ 
                 fastapi \ 
                 "uvicorn[standard]" \ 
-                influxdb3-python prometheus_client psutil PyYAML python-multipart \ 
+                influxdb-client prometheus_client psutil PyYAML python-multipart \ 
                 tflite-runtime librosa pydub "numpy<2.0" resampy birdnetlib \ 
                 redis
 

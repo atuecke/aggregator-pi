@@ -7,7 +7,8 @@ import json
 import datetime as dt
 import logging
 
-from influxdb_client_3 import InfluxDBClient3, Point, WriteOptions, write_client_options
+from influxdb_client import InfluxDBClient, Point, WriteOptions
+from influxdb_client.client.write_api import ASYNCHRONOUS
 from . import config, utils, redis_utils
 
 
@@ -18,25 +19,22 @@ utils.setup_logging()
 log = logging.getLogger("app.publisher")
 # ---------------------------------------------------------------------------
 
-# 1. Define batch/write parameters
-wo = WriteOptions(
-    batch_size=50,          # send once 50 points are queued
-    flush_interval=4_000,   # or every 4 s, whichever comes first
-    jitter_interval=1_000,  # add up to 1 s random jitter to avoid thundering herd
-    retry_interval=2_000,   # wait 2 s before retrying a failed batch
-    max_retries=3,          # retry up to 3× before giving up
+# 1. Instantiate the InfluxDB client
+client = InfluxDBClient(
+    url=config.INFLUX_URL,
+    token=config.INFLUX_TOKEN,
+    org=config.INFLUX_ORG
 )
 
-# Wrap it (and any callbacks) into a dict
-wco = write_client_options(write_options=wo)
-
-# 3. Instantiate the InfluxDB client with batching enabled
-client = InfluxDBClient3(
-    host=config.INFLUX_URL,
-    token=config.INFLUX_TOKEN,
-    org=config.INFLUX_ORG,
-    database=config.INFLUX_RECORDINGS_BUCKET,
-    write_client_options=wco,      # ← here’s the batching config
+# 2. Get the write API with batching options
+write_api = client.write_api(
+    write_options=WriteOptions(
+        batch_size=50,          # send once 50 points are queued
+        flush_interval=4_000,   # or every 4 s, whichever comes first
+        jitter_interval=1_000,  # add up to 1 s random jitter to avoid thundering herd
+        retry_interval=2_000,   # wait 2 s before retrying a failed batch
+        max_retries=3,          # retry up to 3× before giving up
+    )
 )
 
 # Redis stream & consumer-group settings
@@ -77,7 +75,8 @@ def _analysis_publisher():
                 .field("detections", json.dumps(job.get("detections")))
                 .time(dt.datetime.utcnow().isoformat()+"Z")
             )
-            client.write(point)
+            # Write to the bucket
+            write_api.write(bucket=config.INFLUX_RECORDINGS_BUCKET, record=point)
             log.info("Published analysis for %s", filename)
             redis_utils.ack_job(ANALYSIS_STREAM, ANALYSIS_GROUP, msg_id)
 
@@ -113,7 +112,8 @@ def _upload_publisher():
                 .field("uploaded_timestamp", job.get("uploaded_timestamp"))
                 .time(dt.datetime.utcnow().isoformat()+"Z")
             )
-            client.write(point)
+            # Write to the bucket
+            write_api.write(bucket=config.INFLUX_RECORDINGS_BUCKET, record=point)
             log.info("Published upload for %s", filename)
             redis_utils.ack_job(UPLOAD_STREAM, UPLOAD_GROUP, msg_id)
 
